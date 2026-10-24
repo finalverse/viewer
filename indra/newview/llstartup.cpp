@@ -1284,7 +1284,7 @@ bool idle_startup()
                 message = message_response;
             }
 
-            emsg << message;
+            emsg << llfinalverseLoginFailureMessage(message);
 
 
             if(reason_response == "key")

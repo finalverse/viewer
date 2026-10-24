@@ -28,6 +28,9 @@ std::string llfinalversePlanSummary(const LLSD& plan);
 // Vendor account benefits are optional on a non-system grid. An advertised
 // service still requires its normal error notification if initialization fails.
 bool llfinalverseBenefitsExpected(bool system_grid, const LLSD& response);
+// Normalize inherited support destinations in login diagnostics only. Preserve
+// the error and any independent grid operator's contact information.
+std::string llfinalverseLoginFailureMessage(std::string message);
 
 struct LLFinalverseServices
 {

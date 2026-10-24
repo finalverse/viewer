@@ -141,6 +141,15 @@ bool llfinalverseBenefitsExpected(bool system_grid, const LLSD& response)
     return system_grid || response.has("account_level_benefits");
 }
 
+std::string llfinalverseLoginFailureMessage(std::string message)
+{
+    for (const auto* inherited : {"https://support.secondlife.com", "http://support.secondlife.com", "support@secondlife.com"})
+    {
+        LLStringUtil::replaceString(message, inherited, "https://github.com/finalverse/viewer/issues");
+    }
+    return message;
+}
+
 LLFinalverseServices llfinalverseParseServices(const LLSD& result, const std::string& region, const std::string& actor)
 {
     LLFinalverseServices services;

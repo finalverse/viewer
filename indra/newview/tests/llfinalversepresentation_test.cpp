@@ -5,12 +5,39 @@
 #include "../llfinalverseteleport.h"
 #include "../test/lltut.h"
 #include <set>
+#include <array>
+#include "../llfinalverseparceloverlay.h"
 namespace tut
 {
 struct finalverse_presentation_data {};
 typedef test_group<finalverse_presentation_data> group_t;
 typedef group_t::object object_t;
 group_t finalverse_presentation_group("finalverse_presentation");
+template<> template<> void object_t::test<23>()
+{
+    std::array<unsigned char, 4098> storage{};
+    std::array<unsigned char, 1024> packet{};
+    packet.fill(1); storage.fill(0xa5);
+    for (int chunk = 0; chunk != 4; ++chunk)
+        ensure("ordinary overlay chunk accepted", llfinalverseCopyParcelOverlay(storage.data()+1, 4096, chunk, packet.data(), packet.size(), 4));
+    const auto complete = storage;
+    for (int chunk : {-1, 4, 15, 2147483647})
+        ensure("extended or invalid sequence cannot overwrite heap", !llfinalverseCopyParcelOverlay(storage.data()+1, 4096, chunk, packet.data(), packet.size(), 4));
+    ensure("rejected packets leave all bytes unchanged", storage == complete);
+    ensure_equals("leading guard", static_cast<int>(storage.front()), 0xa5);
+    ensure_equals("trailing guard", static_cast<int>(storage.back()), 0xa5);
+    ensure("short payload rejected", !llfinalverseCopyParcelOverlay(storage.data()+1, 4096, 0, packet.data(), 1023, 4));
+    ensure("inconsistent capacity rejected", !llfinalverseCopyParcelOverlay(storage.data()+1, 4095, 0, packet.data(), 1024, 4));
+    ensure("null source rejected", !llfinalverseCopyParcelOverlay(storage.data()+1, 4096, 0, nullptr, 1024, 4));
+}
+template<> template<> void object_t::test<22>()
+{
+    const std::string support = "https://github.com/finalverse/viewer/issues";
+    ensure_equals("localized inherited address", llfinalverseLoginFailureMessage("Invalid name. support@secondlife.com."), "Invalid name. " + support + ".");
+    ensure_equals("server fallback URL", llfinalverseLoginFailureMessage("See https://support.secondlife.com"), "See " + support);
+    ensure_equals("legacy HTTP URL", llfinalverseLoginFailureMessage("See http://support.secondlife.com"), "See " + support);
+    ensure_equals("independent operator preserved", llfinalverseLoginFailureMessage("Contact help@example.org for this grid."), "Contact help@example.org for this grid.");
+}
 template<> template<> void object_t::test<6>()
 {
     ensure("declared legacy region", llfinalverseClientBakingRequired(true, false, false));

@@ -75,7 +75,7 @@ public:
     U8              parcelLineFlags(S32 row, S32 col) const;
 
     // MANIPULATE
-    void    uncompressLandOverlay(S32 chunk, U8* compressed_overlay);
+    void    uncompressLandOverlay(S32 chunk, const U8* compressed_overlay, S32 packed_size);
 
     // Indicate property lines and overlay texture need to be rebuilt.
     void    setDirty();

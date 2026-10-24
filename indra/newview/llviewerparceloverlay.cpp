@@ -27,6 +27,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "llviewerparceloverlay.h"
+#include "llfinalverseparceloverlay.h"
 
 // indra includes
 #include "llparcel.h"
@@ -432,13 +433,16 @@ void LLViewerParcelOverlay::updateOverlayTexture()
     }
 }
 
-void LLViewerParcelOverlay::uncompressLandOverlay(S32 chunk, U8* packed_overlay)
+void LLViewerParcelOverlay::uncompressLandOverlay(S32 chunk, const U8* packed_overlay, S32 packed_size)
 {
     // Unpack the message data into the ownership array
-    S32 size = mParcelGridsPerEdge * mParcelGridsPerEdge;
-    S32 chunk_size = size / PARCEL_OVERLAY_CHUNKS;
-
-    memcpy(mOwnership + chunk*chunk_size, packed_overlay, chunk_size);      /*Flawfinder: ignore*/
+    const auto size = static_cast<std::size_t>(mParcelGridsPerEdge) * mParcelGridsPerEdge;
+    if (packed_size <= 0 || !llfinalverseCopyParcelOverlay(mOwnership, size, chunk,
+            packed_overlay, static_cast<std::size_t>(packed_size), PARCEL_OVERLAY_CHUNKS))
+    {
+        LL_WARNS_ONCE("ParcelOverlay") << "Rejected parcel overlay chunk outside the allocated region buffer" << LL_ENDL;
+        return;
+    }
 
     // Force property lines and overlay texture to update
     setDirty();

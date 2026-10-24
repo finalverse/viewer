@@ -1527,6 +1527,11 @@ void LLViewerParcelMgr::processParcelOverlay(LLMessageSystem *msg, void **user)
 
     S32 sequence_id;
     msg->getS32Fast(_PREHASH_ParcelData, _PREHASH_SequenceID, sequence_id);
+    if (sequence_id < 0 || sequence_id >= PARCEL_OVERLAY_CHUNKS)
+    {
+        LL_WARNS_ONCE("ParcelOverlay") << "Rejected unsupported parcel overlay sequence " << sequence_id << LL_ENDL;
+        return;
+    }
     msg->getBinaryDataFast(
             _PREHASH_ParcelData,
             _PREHASH_Data,
@@ -1537,7 +1542,7 @@ void LLViewerParcelMgr::processParcelOverlay(LLMessageSystem *msg, void **user)
     LLViewerRegion *region = LLWorld::getInstance()->getRegion(host);
     if (region)
     {
-        region->mParcelOverlay->uncompressLandOverlay( sequence_id, sPackedOverlay );
+        region->mParcelOverlay->uncompressLandOverlay(sequence_id, sPackedOverlay, packed_overlay_size);
     }
 }
 
