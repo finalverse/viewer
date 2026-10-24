@@ -46,6 +46,8 @@
 #include "llmd5.h"
 #include "llfloaterworldmap.h"
 #include "llurldispatcher.h"
+#include "llstartup.h"
+#include "llslurl.h"
 #include "llerrorcontrol.h"
 #include "llvoavatarself.h"         // for gAgentAvatarp->getFullname()
 #include <ApplicationServices/ApplicationServices.h>
@@ -95,8 +97,9 @@ bool initViewer()
     }
     else if (!gHandleSLURL.empty())
     {
-        dispatchUrl(gHandleSLURL);
-        gHandleSLURL = "";
+        const auto pending = gHandleSLURL;
+        gHandleSLURL.clear();
+        dispatchUrl(pending);
     }
     return ok;
 }
@@ -117,6 +120,9 @@ bool pumpMainLoop()
     if (!ret && gViewerAppPtr != NULL)
     {
         ret = gViewerAppPtr->frame();
+        if(!ret && !gHandleSLURL.empty() && LLStartUp::getStartupState()>=STATE_BROWSER_INIT){
+            const auto pending=gHandleSLURL;gHandleSLURL.clear();dispatchUrl(pending);
+        }
     } else {
         ret = true;
     }
@@ -481,6 +487,12 @@ void handleUrl(const char* url_utf8)
 
 void dispatchUrl(std::string url)
 {
+    // Keep only the latest bounded Living Earth request until native UI/login
+    // controls exist. The dispatcher intentionally throttles early external URLs.
+    if(url.size()<=32768 && LLSLURL(url).getAppCmd()=="living_earth" && LLStartUp::getStartupState()<STATE_BROWSER_INIT){
+        gHandleSLURL=url;return;
+    }
+
     // Safari 3.2 silently mangles secondlife:///app/ URLs into
     // secondlife:/app/ (only one leading slash).
     // Fix them up to meet the URL specification. JC

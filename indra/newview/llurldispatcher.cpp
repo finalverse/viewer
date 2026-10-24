@@ -159,8 +159,10 @@ bool LLURLDispatcherImpl::dispatchApp(const LLSLURL& slurl,
                                       LLMediaCtrl* web,
                                       bool trusted_browser)
 {
-    LL_INFOS() << "cmd: " << slurl.getAppCmd() << " path: " << slurl.getAppPath() << " query: " << slurl.getAppQuery() << LL_ENDL;
-    const LLSD& query_map = LLURI::queryMap(slurl.getAppQuery());
+    LL_INFOS() << "cmd: " << slurl.getAppCmd() << " path: " << slurl.getAppPath() << " (query omitted)" << LL_ENDL;
+    // LLURI already decoded each value once. Re-parsing the decoded query
+    // splits embedded ampersands in structured handoffs and double-decodes escapes.
+    const LLSD query_map = slurl.getAppQueryMap();
     bool handled = LLCommandDispatcher::dispatch(
             slurl.getAppCmd(), slurl.getAppPath(), query_map, slurl.getGrid(), web, nav_type, trusted_browser);
 

@@ -19,6 +19,10 @@ void* fs_desktop_create(uint32_t width, uint32_t height);
 int32_t fs_desktop_render(void* handle, const uint8_t* request, size_t request_len,
                          uint8_t* rgba, size_t rgba_capacity,
                          char* report, size_t report_capacity);
+/* Optional extension: explicit read-only SpatialDB source config; strict v3
+ * placement is supplied only after native session/binding verification. The
+ * config carries a local credential file path, never a native world capability. */
+int32_t fs_desktop_geographic_source(void* handle, const uint8_t* config, size_t config_len);
 void fs_desktop_destroy(void* handle);
 #ifdef __cplusplus
 }

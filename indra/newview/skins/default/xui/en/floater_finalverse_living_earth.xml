@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<floater name="finalverse_living_earth" title="LIVING EARTH" width="580" height="540" layout="topleft" positioning="cascading" save_rect="true" can_minimize="true" can_resize="false" bg_opaque_color="FinalverseBackground" bg_alpha_color="FinalverseBackground">
+ <text left="20" top="32" width="540" height="28" font="SansSerifLarge" text_color="FinalverseText">One place. Two perspectives.</text>
+ <text_editor name="review" left="20" top="78" width="540" height="342" font="SansSerif" read_only="true" word_wrap="true" border_visible="false" bg_readonly_color="FinalverseSurface" text_readonly_color="FinalverseText" max_length="12000"/>
+ <button name="enter" label="Go to world / sign in" left="20" top="436" width="256" height="32"/>
+ <button name="verify" label="Verify arrival" left="288" top="436" width="272" height="32"/>
+ <button name="receipt" label="Record arrival" left="20" top="482" width="158" height="32"/>
+ <button name="storm" label="FinalStorm view" left="190" top="482" width="178" height="32"/>
+ <button name="return" label="Return to Earth" left="380" top="482" width="180" height="32"/>
+</floater>

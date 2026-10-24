@@ -53,7 +53,7 @@ void register_url_schemes()
         if (status == noErr)
         {
             // Explicitly set this app as the default handler for our URL schemes
-            NSArray *schemes = @[@"secondlife", @"x-grid-location-info"];
+            NSArray *schemes = @[@"finalverse", @"secondlife", @"x-grid-location-info"];
             NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
 
             for (NSString *scheme in schemes)

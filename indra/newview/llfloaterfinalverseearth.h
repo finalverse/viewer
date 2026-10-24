@@ -17,4 +17,21 @@ private:
     std::string mPlan,mStatus;
     LLSD mDestination;
 };
+
+// Separate from the existing Earth creation/approval workflow.
+class LLFloaterFinalverseLivingEarth : public LLFloater
+{
+public:
+    explicit LLFloaterFinalverseLivingEarth(const LLSD& key):LLFloater(key){}
+    bool postBuild() override;
+    void onOpen(const LLSD& key) override;
+private:
+    void verify(bool arrival);
+    void display(const std::string& message);
+    LLSD mHandoff;
+    bool mBusy=false;
+};
+// Read-only rendering placement, valid only for the current authenticated native session.
+LLSD llfinalverseLivingPlacement();
+
 #endif

@@ -363,4 +363,28 @@ namespace tut
         }
     }
 
+    template<> template<> void slurlTestObject::test<5>()
+    {
+        std::string fixture(gSampleGridFile);const std::string from="my.grid.com",to="127.0.0.1:19080";
+        size_t at=0;while((at=fixture.find(from,at))!=std::string::npos){fixture.replace(at,from.size(),to);at+=to.size();}
+        llofstream gridfile(TEST_FILENAME);gridfile<<fixture;gridfile.close();LLGridManager::getInstance()->initialize(TEST_FILENAME);
+        const LLSLURL location("x-grid-location-info://127.0.0.1:19080/region/Old%20Montreal/364/387/15");
+        ensure_equals("explicit grid port preserved",location.getGrid(),to);
+        ensure_equals("variable region location admitted",location.getType(),LLSLURL::LOCATION);
+        ensure_equals("region local position is not modulo 256",location.getPosition(),LLVector3(364,387,15));
+        ensure_equals("Linden width bound preserved",LLSLURL("secondlife://Agni/secondlife/Region/364/387/15").getType(),LLSLURL::INVALID);
+        ensure_equals("external location still bounded",LLSLURL("x-grid-location-info://127.0.0.1:19080/region/Region/9000/387/15").getType(),LLSLURL::INVALID);
+    }
+
+    template<> template<> void slurlTestObject::test<6>()
+    {
+        const std::string data="{\"connection\":{\"start\":\"uri:Old Montreal&364&387&15\"},\"literal\":\"%26\"}";
+        const std::string query="?request="+LLURI::escape(data);
+        const LLSLURL single("finalverse:/app/living_earth/open"+query),triple("finalverse:///app/living_earth/open"+query);
+        ensure_equals("OS normalized app URI recognized",single.getType(),LLSLURL::APP);
+        ensure_equals("known command retained",single.getAppCmd(),"living_earth");
+        ensure_equals("structured value is decoded exactly once",single.getAppQueryMap()["request"].asString(),data);
+        ensure_equals("canonical and normalized forms agree",single.getAppQueryMap(),triple.getAppQueryMap());
+    }
+
 }

@@ -1,6 +1,8 @@
 // Copyright 2026 Finalverse contributors. SPDX-License-Identifier: LGPL-2.1-only
 #include "llviewerprecompiledheaders.h"
 #include "llfloaterfinalversestorm.h"
+#include "llfloaterfinalverseearth.h"
+#include <fstream>
 #include "finalstorm/finalstorm_desktop.h"
 #include "llagent.h"
 #include "llappviewer.h"
@@ -45,6 +47,8 @@ std::string captureNativeScene()
         return {};
     LLSD root;
     root["schema"] = "finalverse.desktop-scene/v2";
+    const auto geography=llfinalverseLivingPlacement();
+    if(geography.isMap()){root["schema"]="finalverse.desktop-scene/v3";root["geography"]=geography;}
     root["actor"]  = gAgentID.asString();
     root["region"] = region->getRegionID().asString();
     auto camera    = LLViewerCamera::getInstance();
@@ -265,6 +269,17 @@ struct LLFloaterFinalverseStorm::Worker
                 dlclose(library);
             return;
         }
+        if(const char* configured=getenv("FINALSTORM_GEOGRAPHIC_SOURCE"))
+        {
+            auto configure=reinterpret_cast<decltype(&fs_desktop_geographic_source)>(dlsym(library,"fs_desktop_geographic_source"));
+            const auto file=std::filesystem::symlink_status(configured,ec);
+            std::string bytes;
+            if(!ec&&std::filesystem::path(configured).is_absolute()&&std::filesystem::is_regular_file(file)&&std::filesystem::file_size(configured,ec)<=16384&&!ec){std::ifstream input(configured);bytes.assign(std::istreambuf_iterator<char>(input),{});}
+            if(!configure||bytes.empty()||configure(context,reinterpret_cast<const uint8_t*>(bytes.data()),bytes.size())!=0){
+                auto result=std::make_unique<Result>();result->report="Geographic source refused. Select a private local publication read grant and matching immutable source configuration.";
+                {std::lock_guard<std::mutex> lock(mutex);ready=std::move(result);}destroy(context);dlclose(library);return;
+            }
+        }
         for (;;)
         {
             std::string input;
@@ -387,7 +402,7 @@ void LLFloaterFinalverseStorm::draw()
                     auto report = LlsdFromJson(boost::json::parse(result->report));
                     getChild<LLTextBox>("status")->setText("FinalStorm · " + report["backend"].asString() + " · " +
                                                            report["objects"].asString() + " objects · " + report["triangles"].asString() +
-                                                           " triangles · frame " + report["frame"].asString());
+                                                           " triangles · " + report["geographic_tiles"].asString() + " geographic tiles · frame " + report["frame"].asString());
                     const auto frame = report["frame"].asInteger();
                     if (frame == 1 || frame % 50 == 0)
                         LL_INFOS("FinalStormDesktop") << result->report << LL_ENDL;

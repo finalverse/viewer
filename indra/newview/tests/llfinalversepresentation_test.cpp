@@ -1,12 +1,14 @@
 // Copyright (c) 2026 Finalverse contributors. SPDX-License-Identifier: LGPL-2.1-only
 #include "../llviewerprecompiledheaders.h"
+#include "../llfinalverselivingcontract.h"
+#include "llsdjson.h"
 #include "../llfinalversepresentation.h"
 #include "../llfinalverselegacyappearance.h"
 #include "../llfinalverseteleport.h"
+#include "../llfinalverseparceloverlay.h"
 #include "../test/lltut.h"
 #include <set>
 #include <array>
-#include "../llfinalverseparceloverlay.h"
 namespace tut
 {
 struct finalverse_presentation_data {};
@@ -256,6 +258,22 @@ template<> template<> void object_t::test<20>()
     LLSD state;for(S32 n=1;n<=200;++n){page["events"][0]["sequence"]=n;page["cursor"]=n;state=llfinalverseSessionPage(state,page,error);ensure("bounded pages remain valid",error.empty());}
     size_t bytes=0;for(const auto& entry:llsd::inArray(state["messages"]))bytes+=entry["text"].asString().size();
     ensure("display bounded independently of durable history",bytes<=65536&&state["messages"].size()<=128);
+}
+
+template<> template<> void object_t::test<21>()
+{
+    const char* json=
+#include "fixtures/living-handoff.inc"
+    ;
+    auto h=LlsdFromJson(boost::json::parse(json));
+    ensure("Earth Core golden handoff accepted",llfinalverse_living::handoff(h));
+    auto bad=h;bad["connection"]["password"]="never-crosses";ensure("credentials forbidden",!llfinalverse_living::handoff(bad));
+    bad=h;bad["world_entry"]["region_id"]="11111111-1111-4111-8111-111111111111";ensure("world identities agree",!llfinalverse_living::handoff(bad));
+    bad=h;bad["publication"]["unit"]="feet";ensure("frame unit explicit",!llfinalverse_living::handoff(bad));
+    bad=h;bad["return_to"]["origin"]="http://example.com";ensure("unsafe browser origin forbidden",!llfinalverse_living::handoff(bad));
+    bad=h;bad["connection"]["login_uri"]="https://user:secret@example.com/";ensure("URL credentials forbidden",!llfinalverse_living::handoff(bad));
+    bad=h;bad["world_binding"]["scale"]="1";ensure("numeric strings forbidden",!llfinalverse_living::handoff(bad));
+    bad=h;bad["publication"]["version"]="latest";ensure("mutable publication forbidden",!llfinalverse_living::handoff(bad));
 }
 
 }

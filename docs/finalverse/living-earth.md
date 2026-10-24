@@ -1,0 +1,21 @@
+# Living Earth native integration
+
+This source-build vertical slice keeps existing authentication, world state, transactions, object decoding and the native renderer. Earth Web produces an `earth.world-handoff/v1` public destination envelope using Earth Core 0.2.0. It contains no account, password or capability. The Viewer opens a separate Living Earth review through `finalverse:///app/living_earth/open?request=...`.
+
+The external URL may open a bounded, rate-limited review only. It cannot sign in, teleport, verify a world or mutate state automatically. OS-delivered URLs do not carry the embedded browser's `clicked` marker, so this read-only handler uses the existing throttled external policy. All other handlers keep their policies. App queries use the parsed query map exactly once so encoded ampersands inside native standing coordinates are preserved. Known single-slash custom app forms are normalized without altering query encoding.
+
+“Go to world / sign in” uses the existing configured-grid login/location flow. Approved grid entries retain the full login origin; unknown grids require native configuration. Explicit grid ports and bounded external variable-region start coordinates are preserved. Linden location bounds and credential-clearing protections remain unchanged.
+
+After login, “Verify arrival” reads the region's authenticated `FinalverseWorld` capability. The callback rechecks actor, session, region, capability and destination. World/binding identity, immutable publication/root/frame, frame origin and terrain issuance must match. Only this verified context enables geographic rendering placement. Logout, disconnect or account/region changes invalidate it. Recording arrival checks the authoritative receipt separately; it never grants edit permissions.
+
+The existing FinalStorm preview accepts an optional explicitly configured read-only geographic source. Set `FINALSTORM_DESKTOP_LIBRARY` to an absolute local library and `FINALSTORM_GEOGRAPHIC_SOURCE` to a private source configuration file. That source independently selects a SpatialDB read grant, exact publication/root and native actor. No world capability crosses the rendering ABI. See `finalstorm/docs/runtime/living-earth.md` for the closed source and placement fields.
+
+“Return to Earth” opens the original typed destination in the originating HTTPS/loopback browser. It sends no native session or capability. The browser may require its own read grant again.
+
+Use the canonical isolated harness and evidence in `finalverse/integration/living-earth/` and `finalverse/docs/rd/living-earth/`. A private one-session settings file supplies test credentials; do not put passwords in argv, permanent settings or Git. This is not a public release, installer acceptance or a replacement avatar/terrain subsystem. In particular, the legacy OpenGL path rejects the test world's OpenSim extended terrain layer (77); geographic rendering is provided by the FinalStorm integration, and broader legacy variable-region support is a separate compatibility gap. GIS roof/road representations are not automatically native collision objects.
+
+## Login regression fixes
+
+A 512 m OpenSim region can send parcel-overlay sequence numbers beyond the inherited four-chunk buffer. The Viewer now rejects negative, unsupported and inconsistent payloads before copying; a canary-backed regression reproduces the original chunk-4 boundary. This fixes the observed post-authentication heap overwrite without claiming full variable-region parcel support. Full GuardMalloc traced the write; subsequent avatar-mask failures were downstream memory corruption.
+
+Login diagnostics also normalize inherited `support@secondlife.com` and HTTP/HTTPS Second Life support URLs to the [Finalverse issue tracker](https://github.com/finalverse/viewer/issues). This is limited to the displayed login error, handles localized templates and server fallback text, and preserves independent grid operators’ contact information. Legal and provenance notices are unaffected.

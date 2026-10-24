@@ -54,8 +54,15 @@ const char* LLSLURL::SIM_LOCATION_HOME           = "home";
 const char* LLSLURL::SIM_LOCATION_LAST           = "last";
 
 // resolve a simstring from a slurl
-LLSLURL::LLSLURL(const std::string& slurl)
+LLSLURL::LLSLURL(const std::string& input)
 {
+    // macOS/browser URL dispatch may normalize a custom app URI to one slash.
+    // Normalize only our two known app schemes; preserve all query encoding.
+    std::string slurl(input);
+    for(const std::string scheme:{"finalverse","secondlife"}){
+        const auto prefix=scheme+":/app/";auto start=slurl.substr(0,prefix.size());LLStringUtil::toLower(start);
+        if(start==prefix){slurl.replace(0,prefix.size(),scheme+":///app/");break;}
+    }
     // by default we go to agni.
     mType = INVALID;
 
@@ -217,14 +224,15 @@ LLSLURL::LLSLURL(const std::string& slurl)
                 // (or its a slurl.com or maps.secondlife.com URL).
                 if ((slurl_uri.scheme() == LLSLURL::SLURL_HTTP_SCHEME ||
                      slurl_uri.scheme() == LLSLURL::SLURL_HTTPS_SCHEME) &&
-                    slurl_uri.hostName() != LLGridManager::getInstance()->getGrid())
+                    slurl_uri.authority() != LLGridManager::getInstance()->getGrid())
                 {
                     return;
                 }
 
                 // As it's a Standalone grid/open, we will always have a hostname, as Standalone/open  style
                 // urls are properly formed, unlike the stinky maingrid style
-                mGrid = slurl_uri.hostName();
+                if(slurl_uri.authority().find('@')!=std::string::npos)return;
+                mGrid = slurl_uri.authority();
             }
             if (path_array.size() == 0)
             {
@@ -302,8 +310,14 @@ LLSLURL::LLSLURL(const std::string& slurl)
             if (path_array.size() >= 2)
             {
                 mPosition = LLVector3(path_array); // this construction handles LLSD without all components (values default to 0.f)
-                if ((F32(mPosition[VX]) < 0.f) || (mPosition[VX] > REGION_WIDTH_METERS) ||
-                    (F32(mPosition[VY]) < 0.f) || (mPosition[VY] > REGION_WIDTH_METERS) ||
+                // Explicit external-grid locations are region-local and can target
+                // OpenSim variable regions. Preserve Linden's 256 m grammar.
+                const bool external = slurl_uri.scheme()==SLURL_X_GRID_LOCATION_INFO_SCHEME
+                    && !LLGridManager::getInstance()->getGrid(mGrid).empty()
+                    && !LLGridManager::getInstance()->isSystemGrid(mGrid);
+                const F32 max_width=external?8192.f:REGION_WIDTH_METERS;
+                if ((F32(mPosition[VX]) < 0.f) || (mPosition[VX] > max_width) ||
+                    (F32(mPosition[VY]) < 0.f) || (mPosition[VY] > max_width) ||
                     (F32(mPosition[VZ]) < 0.f) || (mPosition[VZ] > REGION_HEIGHT_METERS))
                 {
                     mType = INVALID;
