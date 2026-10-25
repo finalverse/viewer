@@ -4489,6 +4489,20 @@ void LLAgent::doTeleportViaLocation(const LLVector3d& pos_global)
     }
 }
 
+// Teleports within the agent's current region to an explicit region-local position. Unlike
+// teleportViaLocation it needs no world-map lookup and keeps positions beyond 256 m intact, which
+// an OpenSim variable-size region requires. The simulator remains authoritative for bounds.
+bool LLAgent::teleportWithinRegion(const LLVector3& pos_local)
+{
+    LLViewerRegion* regionp = getRegion();
+    if (!regionp || getTeleportState() != TELEPORT_NONE || !pos_local.isFinite())
+    {
+        return false;
+    }
+    teleportRequest(regionp->getHandle(), pos_local);
+    return true;
+}
+
 // Teleport to global position, but keep facing in the same direction
 void LLAgent::teleportViaLocationLookAt(const LLVector3d& pos_global)
 {

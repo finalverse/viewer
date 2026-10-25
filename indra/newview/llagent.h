@@ -644,6 +644,7 @@ public:
     void            teleportViaLure(const LLUUID& lure_id, bool godlike);   // To an invited location
     void            teleportViaLocation(const LLVector3d& pos_global);      // To a global location - this will probably need to be deprecated
     void            teleportViaLocationLookAt(const LLVector3d& pos_global);// To a global location, preserving camera rotation
+    bool            teleportWithinRegion(const LLVector3& pos_local);       // To a region-local position in the current region, without a world-map lookup
     void            teleportCancel();                                       // May or may not be allowed by server
     void            restoreCanceledTeleportRequest();
     bool            canRestoreCanceledTeleport() { return mTeleportCanceled != NULL; }

@@ -12,6 +12,7 @@
 #include "llfinalversepresentation.h"
 #include "llappviewer.h"
 #include "llfloaterfinalverseworkspace.h"
+#include <iomanip>
 #include <sstream>
 
 bool LLFloaterFinalverseEarth::postBuild()
@@ -149,6 +150,18 @@ public:
         }catch(...){return false;}
     }
 } livingEarthHandler;
+// Region name and region-local x, y, z from a validated "uri:<region>&x&y&z" start.
+std::vector<std::string> standing(const LLSD& handoff)
+{
+    std::vector<std::string> parts;std::stringstream in(handoff["connection"]["start"].asString().substr(4));std::string part;
+    while(std::getline(in,part,'&'))parts.push_back(part);
+    return parts;
+}
+std::string standingLabel(const LLSD& handoff)
+{
+    const auto parts=standing(handoff);
+    return parts.size()==4?parts[0]+" ("+parts[1]+", "+parts[2]+", "+parts[3]+")":handoff["connection"]["start"].asString();
+}
 }
 LLSD llfinalverseLivingPlacement()
 {
@@ -160,8 +173,17 @@ bool LLFloaterFinalverseLivingEarth::postBuild()
 {
     getChild<LLButton>("enter")->setCommitCallback([this](LLUICtrl*,const LLSD&){
         if(!llfinalverse_living::handoff(mHandoff))return;
-        const auto c=mHandoff["connection"];auto start=c["start"].asString().substr(4);std::vector<std::string> parts;std::stringstream in(start);std::string part;while(std::getline(in,part,'&'))parts.push_back(part);
+        const auto c=mHandoff["connection"];const auto parts=standing(mHandoff);
         if(parts.size()!=4)return;
+        // Already signed in to the bound region: move by its authenticated identity, not by a
+        // world-map name lookup, so variable-size region coordinates beyond 256 m stay intact.
+        const auto region=gAgent.getRegion();
+        if(!gDisconnected&&region&&region->getRegionID().asString()==mHandoff["world_binding"]["region_id"].asString())
+        {
+            const LLVector3 place((F32)std::stod(parts[1]),(F32)std::stod(parts[2]),(F32)std::stod(parts[3]));
+            display(gAgent.teleportWithinRegion(place)?"Moving to the standing place in this region. Then Verify arrival and Record arrival.":"Another teleport is in progress. Try again when it finishes.");
+            return;
+        }
         LLURI uri(c["login_uri"].asString());
         const std::string target="x-grid-location-info://"+uri.authority()+"/region/"+LLURI::escape(parts[0])+"/"+parts[1]+"/"+parts[2]+"/"+parts[3];
         LLURLDispatcher::dispatch(target,LLCommandHandler::NAV_TYPE_CLICKED,nullptr,false);
@@ -188,7 +210,7 @@ void LLFloaterFinalverseLivingEarth::display(const std::string& message)
 {
     const bool valid=llfinalverse_living::handoff(mHandoff);
     std::ostringstream out;out<<message<<"\n\n";
-    if(valid)out<<"World: "<<mHandoff["world_binding"]["world_id"].asString()<<"\nRegion: "<<mHandoff["world_binding"]["region_id"].asString()<<"\nLogin service: "<<mHandoff["connection"]["login_uri"].asString()<<"\nStanding location: "<<mHandoff["connection"]["start"].asString()<<"\n\nPublication: "<<mHandoff["publication"]["version"].asString()<<"\nBinding: "<<mHandoff["world_binding"]["version"].asString()<<"\n\nNo account, password or capability is carried by this link. Geographic source provenance remains in Earth. Live edits remain under MutSea authority.";
+    if(valid)out<<"World: "<<mHandoff["world_binding"]["world_id"].asString()<<"\nRegion: "<<mHandoff["world_binding"]["region_id"].asString()<<"\nLogin service: "<<mHandoff["connection"]["login_uri"].asString()<<"\nStanding place: "<<standingLabel(mHandoff)<<"\n\nPublication: "<<mHandoff["publication"]["version"].asString()<<"\nBinding: "<<mHandoff["world_binding"]["version"].asString()<<"\n\nNo account, password or capability is carried by this link. Geographic source provenance remains in Earth. Live edits remain under MutSea authority.";
     getChild<LLTextEditor>("review")->setText(out.str());
     for(auto name:{"enter","verify","receipt","return"})getChild<LLButton>(name)->setEnabled(valid&&!mBusy);
     getChild<LLButton>("storm")->setEnabled(valid&&!mBusy&&llfinalverseLivingPlacement().isMap());
@@ -209,7 +231,10 @@ void LLFloaterFinalverseLivingEarth::verify(bool arrival)
             const auto result=reply["result"],b=result["binding"],p=b["publication"],expected=handoff["publication"];
             if(!reply["ok"].isBoolean()||!reply["ok"].asBoolean()){livingPlacement=LLSD();self->display("The authenticated world check was not confirmed. No entry receipt or mutation is assumed; retry verification when the service recovers.");return;}
             if(arrival){const auto receipt=result["receipt"];const bool arrived=receipt["schema_version"].asString()=="mutsea.geographic-entry-receipt/v1"&&receipt["status"].asString()=="arrived"&&receipt["actor_id"].asString()==actor.asString()&&receipt["region_id"].asString()==regionID.asString()&&receipt["binding_version"]==handoff["world_binding"]["version"];
-                self->display(arrived?"Authenticated arrival receipt received. Native world permissions and WorldLine remain authoritative.":"The server did not confirm arrival at this destination. Navigate to the standing place, then record arrival again.");return;}
+                if(arrived){self->display("Authenticated arrival receipt received. Native world permissions and WorldLine remain authoritative.");return;}
+                std::ostringstream elsewhere;elsewhere<<"The server did not confirm arrival at this destination";
+                if(receipt["horizontal_error_metres"].isReal())elsewhere<<": you are "<<std::fixed<<std::setprecision(1)<<receipt["horizontal_error_metres"].asReal()<<" m from the standing place";
+                self->display(elsewhere.str()+". Use Go to world, then record arrival again.");return;}
             if(result["schema_version"].asString()!="mutsea.geographic-binding-view/v1"||!result["terrain_matches_issued"].isBoolean()||!result["terrain_matches_issued"].asBoolean()||result["recovery_required"].asBoolean()||b["world_id"]!=handoff["world_binding"]["world_id"]||b["region"]["region_id"].asString()!=regionID.asString()||b["version"]!=handoff["world_binding"]["version"]||p["graph_id"]!=expected["graph_id"]||p["version"]!=expected["version"]||p["root_sha256"]!=expected["root_sha256"]||p["frame_id"]!=expected["frame_id"]||p["frame_origin"]!=expected["origin"]){livingPlacement=LLSD();self->display("The authoritative binding or publication differs from the handoff. Rediscover this world in Earth; the geographic viewport remains disabled.");return;}
             LLSD placement;placement["schema"]="finalverse.desktop-geography/v1";for(auto field:{"graph_id","version","root_sha256","frame_id"})placement[field]=p[field];placement["origin"]=p["frame_origin"];placement["region_id"]=regionID.asString();placement["world_id"]=b["world_id"];placement["binding_version"]=b["version"];placement["region_to_ecef"]=b["transform"]["region_to_ecef"];placement["region_to_publication"]=b["transform"]["region_to_publication"];
             livingPlacement=placement;livingActor=actor;livingRegion=regionID;livingSession=session;
