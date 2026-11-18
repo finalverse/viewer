@@ -25,6 +25,10 @@
  */
 
 #include "llviewerprecompiledheaders.h"
+#include "llfinalversenativefeature.h"
+#if FINALVERSE_NATIVE_UNIVERSE
+#include "llfloaterfinalversenative.h"
+#endif
 #include "finalversebrand.h"
 
 #include "llappviewer.h"
@@ -5174,6 +5178,9 @@ static LLTrace::BlockTimerStatHandle FTM_HUD_EFFECTS("HUD Effects");
 ///////////////////////////////////////////////////////
 void LLAppViewer::idle()
 {
+#if FINALVERSE_NATIVE_UNIVERSE
+    llfinalverseNativeMaybeOpen();
+#endif
     LL_PROFILE_ZONE_SCOPED_CATEGORY_APP;
     pingMainloopTimeout("Main:Idle");
 

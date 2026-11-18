@@ -65,7 +65,15 @@ LLDir_Mac::LLDir_Mac()
 {
     mDirDelimiter = "/";
 
-    const std::string productDirectory = FinalverseBrand::PROFILE_NAME;
+    std::string productDirectory = FinalverseBrand::PROFILE_NAME;
+    // Explicitly isolated developer pilot; never reuse a resident login profile.
+    if (const char *pilot = std::getenv("FINALVERSE_NATIVE_PROFILE"))
+    {
+        const std::string name(pilot);
+        if (name.starts_with("Finalverse-Native-") && name.size() <= 64 &&
+            name.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_") == std::string::npos)
+            productDirectory = name;
+    }
 
     std::string executablepathstr = getSystemExecutableFolder();
 

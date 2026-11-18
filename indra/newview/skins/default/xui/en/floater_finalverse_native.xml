@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<floater name="finalverse_native" title="FINALVERSE · LIVING UNIVERSE" width="1040" height="740" layout="topleft" positioning="centered" can_resize="false" save_rect="true">
+ <text left="20" top="32" width="800" height="30" font="SansSerifHuge">A living universe, connected.</text>
+ <text name="connection" left="20" top="70" width="990" height="22">Connecting to Finalverse…</text>
+ <combo_box name="worlds" left="20" top="106" width="300" height="30"/>
+ <button name="connect" label="Reconnect" left="332" top="106" width="124" height="30"/>
+ <button name="disconnect" label="Disconnect" left="468" top="106" width="124" height="30"/>
+ <button name="orbit" label="Orbit" left="604" top="106" width="100" height="30"/>
+ <button name="focus" label="Focus resident" left="716" top="106" width="150" height="30"/>
+ <panel name="viewport" left="20" top="152" width="704" height="448" background_visible="true" bg_alpha_color="Black"/>
+ <text name="residents" left="744" top="154" width="274" height="286" font="SansSerif" wrap="true"/>
+ <text name="scene" left="744" top="458" width="274" height="140" font="SansSerifSmall" wrap="true"/>
+ <text name="history" left="20" top="622" width="990" height="74" font="SansSerifSmall" wrap="true"/>
+ <text left="20" top="708" width="990" height="20" font="SansSerifSmall">Scroll to zoom · Orbit to explore · Read-only world observation</text>
+</floater>

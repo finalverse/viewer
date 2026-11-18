@@ -1839,6 +1839,43 @@ add_executable(${VIEWER_BINARY_NAME}
     )
 
 target_include_directories(${VIEWER_BINARY_NAME} PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
+option(FINALVERSE_NATIVE_UNIVERSE "Build the read-only canonical Native SDK universe observer" OFF)
+configure_file(llfinalversenativefeature.h.in llfinalversenativefeature.h @ONLY)
+if(FINALVERSE_NATIVE_UNIVERSE)
+  find_package(FinalverseNative 0.2 CONFIG REQUIRED)
+  find_package(FinalverseStorm 0.2 CONFIG REQUIRED)
+  file(READ "${CMAKE_SOURCE_DIR}/../finalverse-native.lock.json" fv_native_lock)
+  string(JSON fv_native_expected GET "${fv_native_lock}" native_source_sha256)
+  if(NOT FinalverseNative_SOURCE_SHA256 STREQUAL fv_native_expected)
+    message(FATAL_ERROR "Viewer and installed Core native source locks disagree")
+  endif()
+  # Keep SDK includes/flags on the adapter object; do not invalidate the mature
+  # Viewer's entire PCH/dependency graph or expose SDK internals in its headers.
+  add_library(finalverse_viewer_native OBJECT llfloaterfinalversenative.cpp)
+  target_include_directories(finalverse_viewer_native PRIVATE
+    "$<TARGET_PROPERTY:${VIEWER_BINARY_NAME},INCLUDE_DIRECTORIES>")
+  target_compile_definitions(finalverse_viewer_native PRIVATE
+    "$<TARGET_PROPERTY:${VIEWER_BINARY_NAME},COMPILE_DEFINITIONS>")
+  target_compile_options(finalverse_viewer_native PRIVATE
+    "$<TARGET_PROPERTY:${VIEWER_BINARY_NAME},COMPILE_OPTIONS>")
+  target_link_libraries(finalverse_viewer_native PRIVATE Finalverse::finalverse_native_sdk Storm::finalverse_storm)
+  target_sources(${VIEWER_BINARY_NAME} PRIVATE $<TARGET_OBJECTS:finalverse_viewer_native>)
+  foreach(component finalverse_sdk finalverse_core finalverse_fvp)
+    target_link_libraries(${VIEWER_BINARY_NAME} "$<TARGET_FILE:Finalverse::${component}>")
+    if(APPLE)
+      add_custom_command(TARGET ${VIEWER_BINARY_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:Finalverse::${component}>"
+          "$<TARGET_BUNDLE_DIR:${VIEWER_BINARY_NAME}>/Contents/Frameworks/lib${component}.0.dylib")
+    endif()
+  endforeach()
+  target_link_libraries(${VIEWER_BINARY_NAME} "$<TARGET_FILE:Storm::finalverse_storm>")
+  if(APPLE)
+    add_custom_command(TARGET ${VIEWER_BINARY_NAME} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:Storm::finalverse_storm>"
+        "$<TARGET_BUNDLE_DIR:${VIEWER_BINARY_NAME}>/Contents/Frameworks/libfinalverse_storm.0.dylib")
+  endif()
+  set_property(TARGET ${VIEWER_BINARY_NAME} APPEND PROPERTY BUILD_RPATH "$<TARGET_FILE_DIR:Finalverse::finalverse_sdk>")
+endif()
 
 # add package files
 file(GLOB EVENT_HOST_SCRIPT_GLOB_LIST
