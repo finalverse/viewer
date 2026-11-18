@@ -1,0 +1,13 @@
+{
+  "schema": "finalverse.native-source-lock/v1",
+  "core_repository": "https://github.com/finalverse/finalverse.git",
+  "core_commit": "8f636df7100fefd630e353d2625580c5776e8f3c",
+  "native_source_sha256": "13206ccefb7e5f87845113a165ce9707009e230ddf2046c7e085844079bc2687",
+  "package_version": "0.2.0",
+  "abi_version": 1,
+  "fvp_version": "1.0",
+  "platforms_tested": [
+    "macOS 27.2.1 arm64"
+  ],
+  "note": "Exact code commit and native source digest; installed CMake package only, no vendored SDK copy."
+}

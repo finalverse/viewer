@@ -40,6 +40,10 @@
 #include "llfloaterfinalverseworkspace.h"
 #include "llfloaterfinalverseearth.h"
 #include "llfloaterfinalversestorm.h"
+#include "llfinalversenativefeature.h"
+#if FINALVERSE_NATIVE_UNIVERSE
+#include "llfloaterfinalversenative.h"
+#endif
 #include "llfloaterfinalverserecipe.h"
 #include "llfloaterfinalverseexperience.h"
 #include "llfloateraddpaymentmethod.h"
@@ -338,6 +342,9 @@ void LLViewerFloaterReg::registerFloaters()
     LLFloaterReg::add("finalverse_conversation", "floater_finalverse_conversation.xml", &LLFloaterReg::build<LLFloaterFinalverseConversation>);
     LLFloaterReg::add("finalverse_ai", "floater_finalverse_ai.xml", &LLFloaterReg::build<LLFloaterFinalverseAI>);
     LLFloaterReg::add("finalverse_storm", "floater_finalverse_storm.xml", &LLFloaterReg::build<LLFloaterFinalverseStorm>);
+#if FINALVERSE_NATIVE_UNIVERSE
+    LLFloaterReg::add("finalverse_native", "floater_finalverse_native.xml", &LLFloaterReg::build<LLFloaterFinalverseNative>);
+#endif
     LLFloaterReg::add("finalverse_living_earth", "floater_finalverse_living_earth.xml", &LLFloaterReg::build<LLFloaterFinalverseLivingEarth>);
     LLFloaterReg::add("finalverse_earth", "floater_finalverse_earth.xml", &LLFloaterReg::build<LLFloaterFinalverseEarth>);
     LLFloaterReg::add("finalverse_recipe", "floater_finalverse_recipe.xml", &LLFloaterReg::build<LLFloaterFinalverseRecipe>);
