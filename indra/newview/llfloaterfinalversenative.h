@@ -13,6 +13,7 @@ public:
  void onClose(bool) override;
  void draw() override;
  bool handleScrollWheel(S32,S32,S32) override;
+ bool handleKeyHere(KEY,MASK) override;
 private:
  struct Impl;
  std::unique_ptr<Impl> mNative;

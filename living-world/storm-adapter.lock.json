@@ -1,0 +1,63 @@
+{
+  "schema": "finalverse.storm-viewer-adapter-lock/1",
+  "repository": "https://github.com/finalverse/storm.git",
+  "accepted_main": "d611f7fbf95262dad88140460745e9faf1560e85",
+  "api": "Storm 0.3 triangle surface / FWD 0.1",
+  "files": [
+    {
+      "path": "include/storm/render/renderer.h",
+      "sha256": "6f5cae8c94c655f9d4f692a8ca31a72ca779bf174fcd0cb2a25f8063578135f2"
+    },
+    {
+      "path": "src/render/renderer.cpp",
+      "sha256": "8cd1bdf4a0c47ef102be85265d7c8aa75d9b814e939a857dd2f3decb1c0a43b6"
+    },
+    {
+      "path": "include/storm/fwd_scene.h",
+      "sha256": "354722cff2402f6a3cfc8ee26df8fca51af7803934605e0d53e655eed46558b0"
+    },
+    {
+      "path": "world-definition/scene.cpp",
+      "sha256": "4d0e502dab04e598091ce0eab7be9d1e5f599e6ca75683f32a446e1ccc43f968"
+    },
+    {
+      "path": "world-definition/CMakeLists.txt",
+      "sha256": "f0e5a04f61993aa2e604b776c084a7318d41e680f99e2579627f4f5b86af2821"
+    },
+    {
+      "path": "world-definition/fwd.lock.json",
+      "sha256": "6b978dbf2237fd65172d25aaea8478a499ff98e8d4bdeea5f89e5dc1f153cf65"
+    }
+  ],
+  "ogre_archives": [
+    {
+      "path": "third_party/ogre-next/lib/macosx/libOgreMainStatic.a",
+      "sha256": "6dc05f6ddd049950e3c4f469292c47437f61163d5e8802d64306c5978ec78661"
+    },
+    {
+      "path": "third_party/ogre-next/lib/macosx/libOgreHlmsPbsStatic.a",
+      "sha256": "d4a13007180996d40bd75d1d4ce0e2acf37416e2c3248ea831771519d3dc39ec"
+    },
+    {
+      "path": "third_party/ogre-next/lib/macosx/libOgreHlmsUnlitStatic.a",
+      "sha256": "27db26c0290831a1c8f4eab64aab22f70d818c7f9e8e44bc6144b3fba622e3e7"
+    },
+    {
+      "path": "third_party/ogre-next/lib/macosx/libRenderSystem_MetalStatic.a",
+      "sha256": "26428b604c2b2b5541635ed76e7ebe395eddad8e5495fdd5265b8c22d9bd5115"
+    },
+    {
+      "path": "third_party/ogre-next/include/OgreBuildSettings.h",
+      "sha256": "1df5439ce21b9897c217c4c6ab84ddd56721ee8e6482b50edd9728551957e647"
+    },
+    {
+      "path": "third_party/ogre-next/include/OgreGL3PlusBuildSettings.h",
+      "sha256": "1e88f91cd9b8591ee6378a5a8eb522abbd5cdad3becf673138de667ff7bbd011"
+    },
+    {
+      "path": "third_party/ogre-next/include/OgreVulkanBuildSettings.h",
+      "sha256": "c6bb4a7bf2fb9273c784680601c172de08936069c8d7985060c36a8264e12b8c"
+    }
+  ],
+  "ogre_input_basis": "Stable local rebuilt OGRE archives, copied read-only from concurrent build; not relabeled as previous release checksums. Exact Metal gate rerun against this snapshot."
+}
