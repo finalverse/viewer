@@ -37,6 +37,7 @@
 #include <unistd.h>
 #include <glob.h>
 #include <filesystem>
+#include <CoreFoundation/CoreFoundation.h>
 #include "lldir_utils_objc.h"
 
 // --------------------------------------------------------------------------------
@@ -66,12 +67,29 @@ LLDir_Mac::LLDir_Mac()
     mDirDelimiter = "/";
 
     std::string productDirectory = FinalverseBrand::PROFILE_NAME;
-    // Explicitly isolated developer pilot; never reuse a resident login profile.
+    // A dedicated test bundle keeps its private profile even when reopened
+    // without its launcher environment (for example after a bounded pilot ends).
+    std::string bundleProfile;
+    if (CFBundleRef bundle = CFBundleGetMainBundle())
+    {
+        CFTypeRef value = CFBundleGetValueForInfoDictionaryKey(bundle, CFSTR("FinalverseNativeProfile"));
+        if (value && CFGetTypeID(value) == CFStringGetTypeID())
+        {
+            char text[128]{};
+            if (CFStringGetCString(static_cast<CFStringRef>(value), text, sizeof(text), kCFStringEncodingUTF8))
+                bundleProfile = text;
+        }
+    }
+    const auto validProfile = [](const std::string& name) {
+        return name.starts_with("Finalverse-Native-") && name.size() <= 64 &&
+            name.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_") == std::string::npos;
+    };
+    if (validProfile(bundleProfile)) productDirectory = bundleProfile;
+    // Explicit launcher configuration takes precedence, with the same grammar.
     if (const char *pilot = std::getenv("FINALVERSE_NATIVE_PROFILE"))
     {
         const std::string name(pilot);
-        if (name.starts_with("Finalverse-Native-") && name.size() <= 64 &&
-            name.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_") == std::string::npos)
+        if (validProfile(name))
             productDirectory = name;
     }
 
