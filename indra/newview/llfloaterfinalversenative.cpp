@@ -11,6 +11,9 @@
 #include "llfloaterreg.h"
 #include "llrender.h"
 #include "lltextbox.h"
+#include "llimage.h"
+#include "llsdjson.h"
+#include "llviewertexture.h"
 #include "llvertexbuffer.h"
 #include "llviewercamera.h"
 #include "llviewershadermgr.h"
@@ -25,6 +28,7 @@
 #include <mutex>
 #include <sstream>
 #include <thread>
+#include <openssl/sha.h>
 #include <glm/gtc/type_ptr.hpp>
 namespace {
 using Clock=std::chrono::steady_clock;
@@ -54,10 +58,17 @@ struct World {
  std::vector<Shape> shapes;
  std::vector<fv_event_info> history;
 };
+struct StormFrame {
+ std::string world,definition;
+ std::vector<uint8_t> rgba;
+ uint64_t number=0,triangles=0,sourceRevision=0;
+ Clock::time_point received;
+};
 struct Observation {
  fv_stream_stamp stamp{};
  std::vector<World> worlds;
  Clock::time_point received;
+ std::shared_ptr<const StormFrame> storm;
 };
 struct Worker {
  std::atomic<bool> stop{false};
@@ -67,8 +78,38 @@ struct Worker {
  fv_connection *active=nullptr;
  std::thread thread;
  std::string socket,grant,cache,status="Connecting…";
+ std::string stormDirectory,stormDefinition;
  Worker(std::string a,std::string b,std::string c):socket(std::move(a)),grant(std::move(b)),cache(std::move(c)) {
+  const char *directory=std::getenv("FINALVERSE_STORM_FRAMES"),*definition=std::getenv("FINALVERSE_STORM_DEFINITION_SHA256");
+  if(directory&&definition){stormDirectory=directory;stormDefinition=definition;}
   thread=std::thread([this]{run();});
+ }
+ std::shared_ptr<const StormFrame> readStormFrame() {
+  if(stormDirectory.empty())return nullptr;
+  try {
+   namespace fs=std::filesystem;fs::path directory(stormDirectory);
+   need(directory.is_absolute()&&fs::is_directory(fs::symlink_status(directory)),"private Storm frame directory");
+   need((fs::status(directory).permissions()&(fs::perms::group_all|fs::perms::others_all))==fs::perms::none,"private Storm frame permissions");
+   for(const auto *name:{"frame.ppm","frame.json"}){
+    auto path=directory/name;need(fs::is_regular_file(fs::symlink_status(path)),"regular Storm frame");
+    auto age=fs::file_time_type::clock::now()-fs::last_write_time(path);
+    need(age>=std::chrono::seconds(-1)&&age<=std::chrono::seconds(2),"stale Storm frame");
+   }
+   auto metadata=readBytes(directory/"frame.json",4096);
+   auto report=LlsdFromJson(boost::json::parse(std::string(reinterpret_cast<const char *>(metadata.data()),metadata.size())));
+   need(report["schema"].asString()=="finalverse.storm-view-frame/0.1"&&report["definition_sha256"].asString()==stormDefinition,"Storm frame definition pin");
+   auto bytes=readBytes(directory/"frame.ppm",1280*720*3+128);uint8_t hash[32];SHA256(bytes.data(),bytes.size(),hash);
+   fv_digest expected{};std::copy(hash,hash+32,expected.bytes);need(digest(expected)==report["pixels_sha256"].asString(),"Storm pixel hash");
+   std::istringstream header(std::string(reinterpret_cast<const char *>(bytes.data()),std::min<size_t>(bytes.size(),128)));
+   std::string magic;int width=0,height=0,maximum=0;header>>magic>>width>>height>>maximum;header.get();
+   auto offset=header.tellg();need(magic=="P6"&&width==1280&&height==720&&maximum==255&&offset>0&&bytes.size()==static_cast<size_t>(offset)+1280*720*3,"Storm PPM dimensions");
+   auto frame=std::make_shared<StormFrame>();frame->world=report["world"].asString();frame->definition=stormDefinition;
+   frame->number=static_cast<uint64_t>(report["frame"].asInteger());frame->triangles=static_cast<uint64_t>(report["triangles"].asInteger());
+   frame->sourceRevision=std::stoull(report["source_revision"].asString());
+   frame->received=Clock::now();frame->rgba.resize(1280*720*4);
+   for(size_t i=0;i<1280*720;i++){for(size_t k=0;k<3;k++)frame->rgba[i*4+k]=bytes[static_cast<size_t>(offset)+i*3+k];frame->rgba[i*4+3]=255;}
+   return frame;
+  }catch(const std::exception &){return nullptr;}
  }
  ~Worker() {
   stop=true;wake.notify_all();
@@ -134,6 +175,8 @@ struct Worker {
      }
      next->worlds.push_back(std::move(w));
     }
+    next->storm=readStormFrame();
+    if(next->storm&&!std::any_of(next->worlds.begin(),next->worlds.end(),[&](const auto&w){return identity(w.info.world)==next->storm->world&&w.info.revision==next->storm->sourceRevision;}))next->storm.reset();
     if(stop)break;
     const auto elapsed=std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now()-next->received).count();
     {std::lock_guard lock(mutex);
@@ -165,6 +208,7 @@ public:
  std::map<std::string,std::vector<Batch>> meshes;
  NativeTexture():LLViewerDynamicTexture(512,512,4,ORDER_MIDDLE,true){}
  bool needsRender()override {
+  if(std::getenv("FINALVERSE_STORM_FRAMES"))return false;
   return observation && (orbit||dirty) &&
    std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now()-observation->received).count()+
    static_cast<int64_t>(observation->stamp.source_age_ms)<=2000;
@@ -275,6 +319,19 @@ struct LLFloaterFinalverseNative::Impl {
  std::shared_ptr<const Observation> current;
  std::string selected,worldList;
  uint64_t loggedCursor=UINT64_MAX;
+ LLPointer<LLViewerTexture> stormImage;
+ uint64_t stormFrame=0;
+ bool initialFocus=false;
+ bool stormConfigured=std::getenv("FINALVERSE_STORM_FRAMES")!=nullptr;
+ void camera() {
+  const char *directory=std::getenv("FINALVERSE_STORM_FRAMES");if(!directory||!preview)return;
+  std::filesystem::path root(directory);
+  try{if(!std::filesystem::is_directory(std::filesystem::symlink_status(root)))return;
+   auto path=root/"camera.txt",part=root/"camera.part";
+   {std::ofstream out(part);out<<preview->yaw<<" -0.65 "<<preview->distance<<" "<<(preview->orbit?1:0)<<"\n";}
+   std::filesystem::rename(part,path);
+  }catch(const std::exception &){}
+ }
  void focus() {
   if(!preview)return;
   const auto *w=preview->world();if(!w)return;
@@ -282,7 +339,7 @@ struct LLFloaterFinalverseNative::Impl {
   for(const auto &r:w->residents)if(!target || std::string(r.name).starts_with("Elara "))target=&r;
   if(target)std::copy(std::begin(target->position),std::end(target->position),preview->origin);
   else if(!w->shapes.empty())std::copy(std::begin(w->shapes.front().pose.position),std::end(w->shapes.front().pose.position),preview->origin);
-  preview->distance=std::any_of(w->shapes.begin(),w->shapes.end(),[](const auto &shape){return shape.resident;})?8.f:32.f;preview->dirty=true;
+  preview->distance=stormConfigured?16.f:(std::any_of(w->shapes.begin(),w->shapes.end(),[](const auto &shape){return shape.resident;})?8.f:32.f);preview->dirty=true;camera();
  }
 };
 LLFloaterFinalverseNative::LLFloaterFinalverseNative(const LLSD &key):LLFloater(key),mNative(std::make_unique<Impl>()){}
@@ -290,7 +347,7 @@ LLFloaterFinalverseNative::~LLFloaterFinalverseNative(){disconnect();}
 bool LLFloaterFinalverseNative::postBuild() {
  getChild<LLButton>("connect")->setClickedCallback([this](LLUICtrl *,const LLSD &){connect();});
  getChild<LLButton>("disconnect")->setClickedCallback([this](LLUICtrl *,const LLSD &){disconnect();});
- getChild<LLButton>("orbit")->setClickedCallback([this](LLUICtrl *,const LLSD &){if(mNative->preview)mNative->preview->orbit=!mNative->preview->orbit;});
+ getChild<LLButton>("orbit")->setClickedCallback([this](LLUICtrl *,const LLSD &){if(mNative->preview){mNative->preview->orbit=!mNative->preview->orbit;mNative->camera();}});
  getChild<LLButton>("focus")->setClickedCallback([this](LLUICtrl *,const LLSD &){mNative->focus();});
  getChild<LLComboBox>("worlds")->setCommitCallback([this](LLUICtrl *,const LLSD &){
   mNative->selected=getChild<LLComboBox>("worlds")->getValue().asString();
@@ -308,6 +365,7 @@ void LLFloaterFinalverseNative::connect() {
 }
 void LLFloaterFinalverseNative::disconnect() {
  mNative->worker.reset();mNative->current.reset();
+ mNative->stormImage=nullptr;mNative->stormFrame=0;
  if(mNative->preview)mNative->preview->clear();
  mNative->preview=nullptr;mNative->selected.clear();mNative->worldList.clear();
  for(const auto *name:{"residents","scene","history"})
@@ -317,10 +375,22 @@ void LLFloaterFinalverseNative::disconnect() {
 }
 void LLFloaterFinalverseNative::onOpen(const LLSD &){connect();}
 void LLFloaterFinalverseNative::onClose(bool){disconnect();}
+bool LLFloaterFinalverseNative::handleKeyHere(KEY key,MASK mask) {
+ if(mask==MASK_NONE&&mNative->preview){
+  if(key=='O')mNative->preview->orbit=!mNative->preview->orbit;
+  else if(key=='F'){mNative->focus();return true;}
+  else if(key==KEY_HOME)mNative->preview->distance=mNative->stormConfigured?600.f:32.f;
+  else if(key==KEY_LEFT)mNative->preview->yaw-=.12f;
+  else if(key==KEY_RIGHT)mNative->preview->yaw+=.12f;
+  else return LLFloater::handleKeyHere(key,mask);
+  mNative->preview->dirty=true;mNative->camera();return true;
+ }
+ return LLFloater::handleKeyHere(key,mask);
+}
 bool LLFloaterFinalverseNative::handleScrollWheel(S32 x,S32 y,S32 clicks) {
  if(mNative->preview && getChildView("viewport")->getRect().pointInRect(x,y)) {
-  mNative->preview->distance=llclamp(mNative->preview->distance*std::pow(1.12f,static_cast<F32>(clicks)),2.f,120.f);
-  mNative->preview->dirty=true;return true;
+  mNative->preview->distance=llclamp(mNative->preview->distance*std::pow(1.12f,static_cast<F32>(clicks)),2.f,mNative->stormConfigured?2000.f:120.f);
+  mNative->preview->dirty=true;mNative->camera();return true;
  }
  return LLFloater::handleScrollWheel(x,y,clicks);
 }
@@ -330,7 +400,7 @@ void LLFloaterFinalverseNative::draw() {
   {std::lock_guard lock(mNative->worker->mutex);data=mNative->worker->latest;status=mNative->worker->status;}
   if(data && std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now()-data->received).count()+
     static_cast<int64_t>(data->stamp.source_age_ms)>2000)data.reset();
-  getChild<LLTextBox>("connection")->setText(data?status:"No current observation · displayed state cleared");
+  getChild<LLTextBox>("connection")->setText(data?(mNative->stormConfigured?"Live Rust authority · Storm Metal presentation · reviewed local frame registration":status):"No current observation · displayed state cleared");
   if(data!=mNative->current) {
    mNative->current=data;
    if(!data){if(mNative->preview)mNative->preview->clear();getChild<LLTextBox>("residents")->setText(std::string(""));getChild<LLTextBox>("scene")->setText(std::string(""));getChild<LLTextBox>("history")->setText(std::string(""));}
@@ -346,7 +416,7 @@ void LLFloaterFinalverseNative::draw() {
     if(mNative->selected.empty())mNative->selected=identity(data->worlds.front().info.world);
     if(combo->getValue().asString()!=mNative->selected)combo->setValue(mNative->selected);
     auto &preview=mNative->preview;preview->observation=data;preview->selected=mNative->selected;preview->dirty=true;
-    if(preview->rendered==0)mNative->focus();
+    if(!mNative->initialFocus){mNative->focus();if(mNative->stormConfigured){mNative->preview->distance=600.f;mNative->camera();}mNative->initialFocus=true;}
    }
   }
   if(data && mNative->preview) {
@@ -372,8 +442,33 @@ void LLFloaterFinalverseNative::draw() {
     }
    }
   }
+  if(mNative->stormConfigured){
+   const auto frame=data?data->storm:nullptr;
+   if(frame&&frame->world==mNative->selected&&Clock::now()-frame->received<std::chrono::seconds(2)){
+    if(frame->number!=mNative->stormFrame){
+     LLPointer<LLImageRaw> raw=new LLImageRaw(2048,1024,4);
+     {LLImageDataLock image_lock(raw);if(!raw->isBufferInvalid()){
+      std::memset(raw->getData(),0,2048*1024*4);
+      for(int y=0;y<720;y++)std::memcpy(raw->getData()+y*2048*4,frame->rgba.data()+(719-y)*1280*4,1280*4);
+     }}
+     if(!raw->isBufferInvalid()){
+      if(mNative->stormImage.isNull())mNative->stormImage=LLViewerTextureManager::getLocalTexture(raw.get(),false);
+      else mNative->stormImage->setSubImage(raw.get(),0,0,2048,1024);
+      mNative->stormFrame=frame->number;
+      LL_INFOS("FinalverseNative")<<"Storm Metal displayed world="<<frame->world<<" definition="<<frame->definition<<" frame="<<frame->number<<" triangles="<<frame->triangles<<LL_ENDL;
+     }
+    }
+    getChild<LLTextBox>("scene")->setText("Storm · OGRE Metal\n"+std::to_string(frame->triangles)+" triangles\nPresentation registration\nAbsolute alignment unvalidated");
+   }else {mNative->stormImage=nullptr;mNative->stormFrame=0;getChild<LLTextBox>("connection")->setText(std::string("Waiting for a current, world-scoped Storm frame · viewport cleared"));}
+  }
  }
  LLFloater::draw();
+ if(mNative->stormConfigured){
+  if(mNative->stormImage.notNull()){
+   auto r=getChildView("viewport")->getRect();LLGLSUIDefault gls_ui;gGL.color4f(1,1,1,1);
+   gl_draw_scaled_image(r.mLeft,r.mBottom,r.getWidth(),r.getHeight(),mNative->stormImage,LLColor4::white,LLRectf(0.f,720.f/1024.f,1280.f/2048.f,0.f));
+  }return;
+ }
  if(mNative->current && mNative->preview && mNative->preview->rendered) {
   auto r=getChildView("viewport")->getRect();
   gUIProgram.bind();gGL.getTexUnit(0)->bind(mNative->preview);gGL.color4f(1,1,1,1);
