@@ -1840,6 +1840,14 @@ add_executable(${VIEWER_BINARY_NAME}
 
 target_include_directories(${VIEWER_BINARY_NAME} PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
 option(FINALVERSE_NATIVE_UNIVERSE "Build the read-only canonical Native SDK universe observer" OFF)
+# Ω-XVII.3: Living World console fed by MutSea live replication (libmutsea_replica)
+# and the presentation-only geographic registration (libworld_convergence).
+set(FINALVERSE_LIVE_PREFIX "" CACHE PATH "Prefix holding mutsea/replica.h, finalverse/convergence.h and their dylibs")
+if(FINALVERSE_NATIVE_UNIVERSE AND FINALVERSE_LIVE_PREFIX)
+  set(FINALVERSE_LIVING_WORLD ON)
+else()
+  set(FINALVERSE_LIVING_WORLD OFF)
+endif()
 configure_file(llfinalversenativefeature.h.in llfinalversenativefeature.h @ONLY)
 if(FINALVERSE_NATIVE_UNIVERSE)
   find_package(FinalverseNative 0.2 CONFIG REQUIRED)
@@ -1859,6 +1867,24 @@ if(FINALVERSE_NATIVE_UNIVERSE)
   target_compile_options(finalverse_viewer_native PRIVATE
     "$<TARGET_PROPERTY:${VIEWER_BINARY_NAME},COMPILE_OPTIONS>")
   target_link_libraries(finalverse_viewer_native PRIVATE Finalverse::finalverse_native_sdk Storm::finalverse_storm)
+  if(FINALVERSE_LIVING_WORLD)
+    target_sources(finalverse_viewer_native PRIVATE llfloaterfinalverseliving.cpp)
+    target_include_directories(finalverse_viewer_native PRIVATE "${FINALVERSE_LIVE_PREFIX}/include")
+    foreach(live_lib libmutsea_replica.0.dylib libworld_convergence.dylib)
+      target_link_libraries(${VIEWER_BINARY_NAME} "${FINALVERSE_LIVE_PREFIX}/lib/${live_lib}")
+      if(APPLE)
+        add_custom_command(TARGET ${VIEWER_BINARY_NAME} POST_BUILD
+          COMMAND ${CMAKE_COMMAND} -E copy_if_different "${FINALVERSE_LIVE_PREFIX}/lib/${live_lib}"
+            "$<TARGET_BUNDLE_DIR:${VIEWER_BINARY_NAME}>/Contents/Frameworks/${live_lib}")
+      endif()
+    endforeach()
+    # libworld_convergence needs PROJ; this local integration build resolves it from the
+    # recorded GIS environment (documented in docs/omega-xvii-3/VIEWER-STORM-INTEGRATION.md).
+    if(FINALVERSE_LIVE_PROJ_LIBDIR)
+      set_property(TARGET ${VIEWER_BINARY_NAME} APPEND PROPERTY BUILD_RPATH "${FINALVERSE_LIVE_PROJ_LIBDIR}")
+      target_link_options(${VIEWER_BINARY_NAME} PRIVATE "LINKER:-rpath,${FINALVERSE_LIVE_PROJ_LIBDIR}")
+    endif()
+  endif()
   target_sources(${VIEWER_BINARY_NAME} PRIVATE $<TARGET_OBJECTS:finalverse_viewer_native>)
   foreach(component finalverse_sdk finalverse_core finalverse_fvp)
     target_link_libraries(${VIEWER_BINARY_NAME} "$<TARGET_FILE:Finalverse::${component}>")

@@ -29,6 +29,9 @@
 #if FINALVERSE_NATIVE_UNIVERSE
 #include "llfloaterfinalversenative.h"
 #endif
+#if FINALVERSE_LIVING_WORLD
+#include "llfloaterfinalverseliving.h"
+#endif
 #include "finalversebrand.h"
 
 #include "llappviewer.h"
@@ -5180,6 +5183,9 @@ void LLAppViewer::idle()
 {
 #if FINALVERSE_NATIVE_UNIVERSE
     llfinalverseNativeMaybeOpen();
+#endif
+#if FINALVERSE_LIVING_WORLD
+    llfinalverseLivingMaybeOpen();
 #endif
     LL_PROFILE_ZONE_SCOPED_CATEGORY_APP;
     pingMainloopTimeout("Main:Idle");

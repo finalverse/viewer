@@ -44,6 +44,9 @@
 #if FINALVERSE_NATIVE_UNIVERSE
 #include "llfloaterfinalversenative.h"
 #endif
+#if FINALVERSE_LIVING_WORLD
+#include "llfloaterfinalverseliving.h"
+#endif
 #include "llfloaterfinalverserecipe.h"
 #include "llfloaterfinalverseexperience.h"
 #include "llfloateraddpaymentmethod.h"
@@ -344,6 +347,9 @@ void LLViewerFloaterReg::registerFloaters()
     LLFloaterReg::add("finalverse_storm", "floater_finalverse_storm.xml", &LLFloaterReg::build<LLFloaterFinalverseStorm>);
 #if FINALVERSE_NATIVE_UNIVERSE
     LLFloaterReg::add("finalverse_native", "floater_finalverse_native.xml", &LLFloaterReg::build<LLFloaterFinalverseNative>);
+#endif
+#if FINALVERSE_LIVING_WORLD
+    LLFloaterReg::add("finalverse_living", "floater_finalverse_living.xml", &LLFloaterReg::build<LLFloaterFinalverseLiving>);
 #endif
     LLFloaterReg::add("finalverse_living_earth", "floater_finalverse_living_earth.xml", &LLFloaterReg::build<LLFloaterFinalverseLivingEarth>);
     LLFloaterReg::add("finalverse_earth", "floater_finalverse_earth.xml", &LLFloaterReg::build<LLFloaterFinalverseEarth>);

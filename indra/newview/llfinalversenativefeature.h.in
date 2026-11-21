@@ -1,2 +1,3 @@
 // Optional source-build integration; public preview behavior is unchanged.
 #cmakedefine01 FINALVERSE_NATIVE_UNIVERSE
+#cmakedefine01 FINALVERSE_LIVING_WORLD
