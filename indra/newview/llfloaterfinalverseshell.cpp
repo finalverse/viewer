@@ -548,8 +548,20 @@ struct Engine
         LL_INFOS("FinalverseShell") << "spatial service " << spatialHost << ":" << spatialPort << " " << model.server << " edition " << model.edition << LL_ENDL;
         return true;
     }
-    // Returns status; body (response or refusal body) in out.
+    // Returns status; body (response or refusal body) in out. A request that meets a closed session
+    // (e.g. the spatial service restarted) is retried once on a fresh session (Ω-XIX recovery).
     fv_spatial_status call(const char* op, const bj::object& req, bj::object& out, std::string& why)
+    {
+        auto s = callOnce(op, req, out, why);
+        if (s == FV_SPATIAL_TRANSPORT || s == FV_SPATIAL_PROTOCOL)
+        {
+            out = {};
+            s = callOnce(op, req, out, why);
+            if (s == FV_SPATIAL_OK) LL_INFOS("FinalverseShell") << "spatial request " << op << " succeeded after reconnecting" << LL_ENDL;
+        }
+        return s;
+    }
+    fv_spatial_status callOnce(const char* op, const bj::object& req, bj::object& out, std::string& why)
     {
         if (!connect()) { why = model.spatialError; return FV_SPATIAL_TRANSPORT; }
         char* resp = nullptr;
@@ -762,6 +774,14 @@ struct Engine
         for (auto& r : man.at("resources").as_array())
             if (str(r.as_object(), "role") == "world_definition") { wd = str(r.as_object(), "sha256"); label = str(r.as_object(), "cas"); }
         auto f = fwdBySha.find(wd);
+        if (f == fwdBySha.end())  // a publication made after start-up: reindex the CAS map's definition folders
+        {
+            for (auto& [k, c] : cas)
+                if (!c.fwdDir.empty() && fs::is_directory(c.fwdDir))
+                    for (auto& e : fs::directory_iterator(c.fwdDir))
+                        if (e.is_regular_file() && e.path().extension() == ".json") fwdBySha[sha256(readSmall(e.path(), 1 << 20))] = e.path().string();
+            f = fwdBySha.find(wd);
+        }
         auto cm = cas.find(label);
         if (f == fwdBySha.end() || cm == cas.end()) throw std::runtime_error("scene world definition " + wd.substr(0, 12) + " is not in the local CAS (" + label + ")");
         auto& home = man.at("camera").as_object().at("home").as_object();
@@ -916,6 +936,7 @@ struct Engine
     }
     void create(const std::string& text)
     {
+        model.ai = AiCard{};  // the creation card replaces any previous answer
         model.creation = Model::Creation{};
         model.creation.request = text;
         model.creation.message = "The World Director is proposing a typed creation plan…";
