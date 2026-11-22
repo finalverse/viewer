@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<floater name="finalverse_living" title="Finalverse · Living World" width="1480" height="900" min_width="960" min_height="640" layout="topleft" positioning="none" can_resize="true" background_visible="false" bg_opaque_color="0.018 0.024 0.036 1">
+ <line_editor name="ask" left="400" top="840" width="560" height="26" max_length_bytes="1024" label="Ask Finalverse — “Find Elara and show me the buildings near her”" select_on_focus="false" border_thickness="0" font="SansSerif" text_color="0.93 0.96 1 1" text_pad_left="6"/>
+</floater>

@@ -1,0 +1,137 @@
+16:04:43: Creating resource group General
+16:04:43: Creating resource group Internal
+16:04:43: Creating resource group Autodetect
+16:04:43: SceneManagerFactory for type 'DefaultSceneManager' registered.
+16:04:43: Registering ResourceManager for type Material
+16:04:43: Registering ResourceManager for type Mesh
+16:04:43: Registering ResourceManager for type Mesh2
+16:04:43: Registering ResourceManager for type OldSkeleton
+16:04:43: MovableObjectFactory for type 'ParticleSystem' registered.
+16:04:43: ArchiveFactory for archive type FileSystem registered.
+16:04:43: DDS codec registering
+16:04:43: OITD codec registering
+16:04:43: Registering ResourceManager for type HighLevelGpuProgram
+16:04:43: WARNING: NS Bundle Identifier not set!
+16:04:43: WARNING: NS Bundle Identifier not set!
+16:04:43: MovableObjectFactory for type 'Decal' registered.
+16:04:43: MovableObjectFactory for type 'InternalCubemapProbe' registered.
+16:04:43: MovableObjectFactory for type 'Entity' registered.
+16:04:43: MovableObjectFactory for type 'Item' registered.
+16:04:43: MovableObjectFactory for type 'Light' registered.
+16:04:43: MovableObjectFactory for type 'Rectangle2Dv2' registered.
+16:04:43: MovableObjectFactory for type 'BillboardSet' registered.
+16:04:43: MovableObjectFactory for type 'ManualObject2' registered.
+16:04:43: MovableObjectFactory for type 'BillboardChain' registered.
+16:04:43: MovableObjectFactory for type 'RibbonTrail' registered.
+16:04:43: MovableObjectFactory for type 'WireAabb' registered.
+16:04:43: *-*-* OGRE Initialising
+16:04:43: *-*-* Version 3.0.0 (Eris)
+16:04:43: Installing plugin: Metal RenderSystem
+16:04:43: Metal: Devices Detection Starts
+16:04:43: Metal: "Apple M1"
+16:04:43: Metal: Devices Detection Ends
+16:04:43: Plugin successfully installed
+16:04:43: CPU Identifier & Features
+16:04:43: -------------------------
+16:04:43:  *   CPU ID: ARM64E
+16:04:43:  *   Logical cores: 8
+16:04:43:  *     NEON: yes
+16:04:43: -------------------------
+16:04:43: Metal: Devices Detection Starts
+16:04:43: Metal: "Apple M1"
+16:04:43: Metal: Devices Detection Ends
+16:04:43: Metal: Requested "(default)", selected "Apple M1 (system default)"
+16:04:43: Supports: OSX_GPUFamily1_v1
+16:04:43: Registering ResourceManager for type GpuProgram
+16:04:43: DefaultWorkQueue('Root') initialising on thread main.
+16:04:43: Particle Renderer Type 'billboard' registered
+16:04:43: WARNING: NS Bundle Identifier not set!
+16:04:43: WARNING: NS Bundle Identifier not set!
+16:04:43: Creating resource group Storm
+16:04:43: Added resource location '/Users/wenyan/Finalverse/dev/worktrees/storm-omega-xiii-3-20261119/third_party/ogre-next/Samples/Media/2.0/scripts/materials/Common' of type 'FileSystem' to resource group 'Storm' with recursive option
+16:04:43: Added resource location '/Users/wenyan/Finalverse/dev/worktrees/storm-omega-xiii-3-20261119/third_party/ogre-next/Samples/Media/2.0/scripts/materials/Common/Any' of type 'FileSystem' to resource group 'Storm' with recursive option
+16:04:43: Added resource location '/Users/wenyan/Finalverse/dev/worktrees/storm-omega-xiii-3-20261119/third_party/ogre-next/Samples/Media/2.0/scripts/materials/Common/Metal' of type 'FileSystem' to resource group 'Storm' with recursive option
+16:04:43: Added resource location '/Users/wenyan/Finalverse/dev/worktrees/storm-omega-xiii-3-20261119/third_party/ogre-next/Samples/Media/2.0/scripts/Compositors' of type 'FileSystem' to resource group 'Storm' with recursive option
+16:04:43: Parsing scripts for resource group Autodetect
+16:04:43: Finished parsing scripts for resource group Autodetect
+16:04:43: Creating resources for group Autodetect
+16:04:43: All done
+16:04:43: Parsing scripts for resource group General
+16:04:43: Finished parsing scripts for resource group General
+16:04:43: Creating resources for group General
+16:04:43: All done
+16:04:43: Parsing scripts for resource group Internal
+16:04:43: Finished parsing scripts for resource group Internal
+16:04:43: Creating resources for group Internal
+16:04:43: All done
+16:04:43: Parsing scripts for resource group Storm
+16:04:43: Parsing script Quad.program
+16:04:43: Shader Ogre/Compositor/Quad_vs_Metal compiled successfully.
+16:04:43: Shader Ogre/Compositor/QuadCameraDir_vs_Metal compiled successfully.
+16:04:43: Shader Ogre/Compositor/QuadCameraDirNoUV_vs_Metal compiled successfully.
+16:04:43: Parsing script HiddenAreaMeshVr.material
+16:04:43: Shader Ogre/VR/HiddenAreaMeshVr_vs_Metal compiled successfully.
+16:04:43: Shader Ogre/VR/HiddenAreaMeshVr_ps_Metal compiled successfully.
+16:04:43: Parsing script EsmGaussianBlurLogFilter.material
+16:04:43: Shader ESM/GaussianLogFilterH_ps_Metal compiled successfully.
+16:04:43: Shader ESM/GaussianLogFilterV_ps_Metal compiled successfully.
+16:04:43: Parsing script RadialDensityMask.material
+16:04:43: Shader Ogre/Compositor/RadialDensityMask_vs_Metal compiled successfully.
+16:04:43: Shader Ogre/VR/RadialDensityMask_ps_Metal compiled successfully.
+16:04:43: Parsing script DPSM.material
+16:04:43: Shader Ogre/DPSM/CubeToDpsm_ps_Metal compiled successfully.
+16:04:43: Shader Ogre/DPSM/CubeToDpsm_Colour_ps_Metal compiled successfully.
+16:04:43: Parsing script Atmosphere.material
+16:04:43: OGRE EXCEPTION(6:FileNotFoundException): Cannot locate resource metal_stdlib in resource group Storm or any other group. in ResourceGroupManager::openResource at /Users/wenyan/Finalverse/storm/third_party/ogre-next/OgreMain/src/OgreResourceGroupManager.cpp (line 737)
+16:04:43: Shader Ogre/Atmo/NprSky_ps_Metal compiled successfully.
+16:04:43: Parsing script DPM.material
+16:04:43: Shader Ogre/DPM/CubeToDpm_4xFP16_ps_Metal compiled successfully.
+16:04:43: Parsing script PccDepthCompressor.material
+16:04:43: OGRE EXCEPTION(6:FileNotFoundException): Cannot locate resource metal_stdlib in resource group Storm or any other group. in ResourceGroupManager::openResource at /Users/wenyan/Finalverse/storm/third_party/ogre-next/OgreMain/src/OgreResourceGroupManager.cpp (line 737)
+16:04:43: Shader PccDepthCompressor_ps_Metal compiled successfully.
+16:04:43: Parsing script DepthUtils.material
+16:04:43: Shader Ogre/Depth/DownscaleMax_ps_Metal compiled successfully.
+16:04:43: Parsing script Sky.material
+16:04:43: Shader Ogre/Sky/Cubemap_ps_Metal compiled successfully.
+16:04:43: Shader Ogre/Sky/Equirectangular_ps_Metal compiled successfully.
+16:04:43: Parsing script Copyback.material
+16:04:43: Shader Ogre/Copy/4xFP32_ps_Metal compiled successfully.
+16:04:43: Shader Ogre/Copy/4xFP32_2DArray_ps_Metal compiled successfully.
+16:04:43: Shader Ogre/Copy/1xFP32_ps_Metal compiled successfully.
+16:04:43: Shader Ogre/Resolve/1xFP32_Subsample0_ps_Metal compiled successfully.
+16:04:43: Parsing script LocalCubemaps.compositor
+16:04:43: Parsing script StencilTest.compositor
+16:04:43: Parsing script TutorialUav02_Setup.compositor
+16:04:43: Parsing script StereoRendering.compositor
+16:04:43: Parsing script ScreenSpaceReflections.compositor
+16:04:43: Parsing script StaticShadowMaps.compositor
+16:04:43: Parsing script UvBaking.compositor
+16:04:43: Parsing script ShadowMapDebugging.compositor
+16:04:43: Parsing script Refractions.compositor
+16:04:43: Parsing script Tutorial_DynamicCubemap.compositor
+16:04:43: Parsing script IrradianceFieldRaster.compositor
+16:04:43: Parsing script PbsMaterials.compositor
+16:04:43: Parsing script Tutorial_Terrain.compositor
+16:04:43: Parsing script InstancedStereo.compositor
+16:04:43: Parsing script Tutorial_OpenVRWorkspace.compositor
+16:04:43: Parsing script TutorialUav01_Setup.compositor
+16:04:43: Parsing script TutorialSky_Postprocess.compositor
+16:04:43: Parsing script Tutorial_ReconstructPosFromDepth.compositor
+16:04:43: Parsing script PlanarReflections.compositor
+16:04:43: Parsing script EsmGaussianBlurLogFilter.material.json
+16:04:43: Parsing script Mipmaps.material.json
+16:04:43: Finished parsing scripts for resource group Storm
+16:04:43: Creating resources for group Storm
+16:04:43: All done
+16:04:51: Shader 100000000VertexShader_vs compiled successfully.
+16:04:51: Shader 100000000PixelShader_ps compiled successfully.
+16:04:51: Shader 100000001VertexShader_vs compiled successfully.
+16:04:51: Shader 100000001PixelShader_ps compiled successfully.
+16:04:57: DefaultWorkQueue('Root') shutting down on thread main.
+16:04:57: *-*-* OGRE Shutdown
+16:04:57: Unregistering ResourceManager for type OldSkeleton
+16:04:57: Unregistering ResourceManager for type Mesh2
+16:04:57: Unregistering ResourceManager for type Mesh
+16:04:57: Unregistering ResourceManager for type Material
+16:04:57: Unregistering ResourceManager for type HighLevelGpuProgram
+16:04:57: Unregistering ResourceManager for type GpuProgram
