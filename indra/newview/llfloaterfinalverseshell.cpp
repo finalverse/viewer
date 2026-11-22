@@ -348,7 +348,7 @@ struct Resident { std::string id, asset, name; double region[3]{}, displayed[3]{
 struct Event { uint64_t seq = 0, revision = 0; std::string action, kind, entity; };
 struct Frame
 {
-    std::vector<uint8_t> rgba;
+    std::vector<uint8_t> rgb;  // 1280x720, top row first, as delivered by Storm
     uint64_t number = 0, triangles = 0, controlSeq = 0, sourceRevision = 0;
     std::string context, units, frameId, transition;
     bool settled = false;
@@ -1145,6 +1145,7 @@ struct Engine
     }
     std::string pendingNote;
     Clock::time_point navStart = Clock::now();
+    uint64_t framesTorn = 0;
 
     // ------------------------------------------------------------------ Storm frames
     void tickFrames()
@@ -1167,7 +1168,17 @@ struct Engine
             auto j = bj::parse(readSmall(dir / "frame.json", 16384)).as_object();
             if (str(j, "schema") != "finalverse.storm-view-frame/0.2") return;
             auto bytes = readSmall(dir / "frame.ppm", 1280 * 720 * 3 + 128);
-            if (bytes.empty() || sha256(bytes) != str(j, "pixels_sha256")) return;  // torn write: keep the last frame
+            if (bytes.empty()) return;
+            const std::string pixels = sha256(bytes);
+            if (pixels != str(j, "pixels_sha256"))
+            {
+                // The renderer replaced frame.ppm after we read frame.json; its metadata
+                // follows immediately, so re-read it once instead of dropping the frame.
+                auto j2 = bj::parse(readSmall(dir / "frame.json", 16384)).as_object();
+                if (str(j2, "schema") != "finalverse.storm-view-frame/0.2" || str(j2, "pixels_sha256") != pixels) { ++framesTorn; return; }  // keep the last frame
+                j = std::move(j2);
+                t = fs::last_write_time(dir / "frame.json");
+            }
             std::istringstream hdr(bytes.substr(0, 64));
             std::string magic;
             int w = 0, h = 0, mx = 0;
@@ -1187,12 +1198,7 @@ struct Engine
             f->settled = j.at("transition_settled").as_bool();
             f->captureMs = num(j.at("capture_ms"));
             f->switchMs = num(j.at("last_switch_ms"));
-            f->rgba.resize(1280 * 720 * 4);
-            for (size_t i = 0; i < 1280 * 720; ++i)
-            {
-                std::memcpy(&f->rgba[i * 4], &bytes[off + i * 3], 3);
-                f->rgba[i * 4 + 3] = 255;
-            }
+            f->rgb.assign(bytes.begin() + off, bytes.end());  // one copy; no per-pixel conversion
             frameTime = t;
             frame = f;
             if (model.navigating && f->controlSeq >= model.controlSeq && f->settled && model.ai.stage != "executing")
@@ -1260,6 +1266,7 @@ struct LLFloaterFinalverseShell::Impl
     std::unique_ptr<Engine> engine;
     std::shared_ptr<const Model> view;
     LLPointer<LLViewerTexture> image;
+    LLPointer<LLImageRaw> staging;
     uint64_t imageFrame = 0;
     // Measurement (script command `perf`): shell draws and Storm frames presented since the last report.
     uint64_t perfDraws = 0, perfPresented = 0;
@@ -1487,23 +1494,27 @@ void LLFloaterFinalverseShell::draw()
     gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
     gl_rect_2d(0, H, W, 0, T.bg, true);
     const Frame* fr = v && v->frame ? v->frame.get() : nullptr;
-    if (fr && !fr->rgba.empty())
+    if (fr && fr->rgb.size() == 1280 * 720 * 3)
     {
         if (fr->number != m->imageFrame || m->image.isNull())
         {
-            LLPointer<LLImageRaw> raw = new LLImageRaw(2048, 1024, 4);
+            // One persistent RGB staging image; only the 1280x720 region is copied and uploaded.
+            if (m->staging.isNull())
+            {
+                m->staging = new LLImageRaw(2048, 1024, 3);
+                LLImageDataLock lock(m->staging);
+                if (!m->staging->isBufferInvalid()) std::memset(m->staging->getData(), 0, 2048 * 1024 * 3);
+            }
+            LLPointer<LLImageRaw> raw = m->staging;
             {
                 LLImageDataLock lock(raw);
                 if (!raw->isBufferInvalid())
-                {
-                    std::memset(raw->getData(), 0, 2048 * 1024 * 4);
-                    for (int y = 0; y < 720; y++) std::memcpy(raw->getData() + y * 2048 * 4, fr->rgba.data() + (719 - y) * 1280 * 4, 1280 * 4);
-                }
+                    for (int y = 0; y < 720; y++) std::memcpy(raw->getData() + y * 2048 * 3, fr->rgb.data() + (719 - y) * 1280 * 3, 1280 * 3);
             }
             if (!raw->isBufferInvalid())
             {
                 if (m->image.isNull()) m->image = LLViewerTextureManager::getLocalTexture(raw.get(), false);
-                else m->image->setSubImage(raw.get(), 0, 0, 2048, 1024);
+                else m->image->setSubImage(raw.get(), 0, 0, 1280, 720);
                 m->imageFrame = fr->number;
                 m->perfPresented++;
             }
