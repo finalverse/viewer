@@ -562,6 +562,7 @@ struct Engine
     {
         const auto t0 = Clock::now();
         model.navigating = true;
+        navStart = Clock::now();
         model.navStage = "Resolving";
         publish();
         bj::object req{ { "target", target } };
@@ -1142,6 +1143,7 @@ struct Engine
         });
     }
     std::string pendingNote;
+    Clock::time_point navStart = Clock::now();
 
     // ------------------------------------------------------------------ Storm frames
     void tickFrames()
@@ -1192,7 +1194,13 @@ struct Engine
             }
             frameTime = t;
             frame = f;
-            if (model.navigating && f->controlSeq >= model.controlSeq && f->settled && model.ai.stage != "executing") model.navigating = false;
+            if (model.navigating && f->controlSeq >= model.controlSeq && f->settled && model.ai.stage != "executing")
+            {
+                model.navigating = false;
+                LL_INFOS("FinalverseShell") << "navigation presented context=" << model.ctx.label << " request_to_settled_frame_ms="
+                                            << fmt(std::chrono::duration<double, std::milli>(Clock::now() - navStart).count(), 1)
+                                            << " storm_switch_ms=" << fmt(f->switchMs, 1) << " triangles=" << f->triangles << LL_ENDL;
+            }
         }
         catch (const std::exception&) {}
     }
@@ -1252,6 +1260,9 @@ struct LLFloaterFinalverseShell::Impl
     std::shared_ptr<const Model> view;
     LLPointer<LLViewerTexture> image;
     uint64_t imageFrame = 0;
+    // Measurement (script command `perf`): shell draws and Storm frames presented since the last report.
+    uint64_t perfDraws = 0, perfPresented = 0;
+    double perfT0 = 0;
     Mode mode = Mode::Explore;
     std::vector<Hit> hits;
     std::vector<std::string> focusOrder;
@@ -1459,6 +1470,7 @@ void LLFloaterFinalverseShell::draw()
     if (getParent() && getRect() != getParent()->getLocalRect()) setShape(getParent()->getLocalRect());
     const S32 W = getRect().getWidth(), H = getRect().getHeight();
     const double t = m->now();
+    m->perfDraws++;
     m->hits.clear();
     m->focusOrder.clear();
     if (m->engine)
@@ -1492,6 +1504,7 @@ void LLFloaterFinalverseShell::draw()
                 if (m->image.isNull()) m->image = LLViewerTextureManager::getLocalTexture(raw.get(), false);
                 else m->image->setSubImage(raw.get(), 0, 0, 2048, 1024);
                 m->imageFrame = fr->number;
+                m->perfPresented++;
             }
         }
         const float aspect = (float)W / std::max(1, H), imageAspect = 1280.f / 720.f;
@@ -2111,6 +2124,16 @@ void LLFloaterFinalverseShell::draw()
             std::string order;
             for (auto& id : m->focusOrder) order += id + "|";
             LL_INFOS("FinalverseShell") << "UITEST probe focus_order=" << order << " focus=" << m->focusIndex << " context=" << (v ? v->ctx.label : "") << " selected=" << (v ? v->selectedLabel : "") << LL_ENDL;
+        }
+        else if (cmd == "perf")
+        {
+            const double span = std::max(1e-3, t - m->perfT0);
+            if (arg != "reset")
+                LL_INFOS("FinalverseShell") << "PERF " << arg << " seconds=" << fmt(span, 2) << " viewer_fps=" << fmt(m->perfDraws / span, 1)
+                                            << " storm_presented_fps=" << fmt(m->perfPresented / span, 1) << " context=" << (v ? v->ctx.label : "")
+                                            << " switch_ms=" << (fr ? fmt(fr->switchMs, 1) : std::string("-")) << " capture_ms=" << (fr ? fmt(fr->captureMs, 2) : std::string("-")) << LL_ENDL;
+            m->perfDraws = m->perfPresented = 0;
+            m->perfT0 = t;
         }
         else if (cmd == "mark") LL_INFOS("FinalverseShell") << "MARK " << arg << " context=" << (v ? v->ctx.label : "") << " rev=" << (v ? v->live.revision : 0) << LL_ENDL;
     }
