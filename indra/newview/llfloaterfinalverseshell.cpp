@@ -373,6 +373,9 @@ struct AiCard
     std::vector<std::string> plan, route, routeLabels, missing;
     double planSeconds = 0;
     size_t executing = 0;
+    // Ω-XIX grounded answers: catalog facts with their classification, kept apart from general background.
+    std::string answer, general, subject;
+    std::vector<std::pair<std::string, std::string>> facts;  // (classification, text)
 };
 struct Model
 {
@@ -1170,6 +1173,17 @@ struct Engine
             if (auto* r = j.if_contains("route"))
                 for (auto& x : r->as_array()) { c.route.push_back(str(x.as_object(), "entity")); c.routeLabels.push_back(str(x.as_object(), "label")); }
             if (auto* mi = j.if_contains("missing")) for (auto& x : mi->as_array()) c.missing.push_back(std::string(x.as_string()));
+            if (stage == "answered")
+            {
+                c.answer = str(j, "answer");
+                c.general = str(j, "general_knowledge");
+                c.subject = str(j, "subject");
+                if (auto* f = j.if_contains("facts"))
+                    for (auto& x : f->as_array()) c.facts.push_back({ str(x.as_object(), "class"), str(x.as_object(), "text") });
+                c.stage = "done";
+                LL_INFOS("FinalverseShell") << "ai answered subject=" << c.subject << " facts=" << c.facts.size() << " seconds=" << fmt(c.planSeconds, 1) << LL_ENDL;
+                return;
+            }
             LL_INFOS("FinalverseShell") << "ai status stage=" << stage << " route=" << c.route.size() << " seconds=" << fmt(c.planSeconds, 1) << " " << c.message << LL_ENDL;
             if (stage == "ready" && !c.route.empty())
             {
@@ -2399,7 +2413,7 @@ void LLFloaterFinalverseShell::draw()
                 dot((F32)insR - 20, (F32)yy + 4, 3, propColour(p));
                 yy -= 17;
             }
-            text("● kernel-derived  ● design input  ● assumed", insL + 30, yy - 2, T.ink3, 0);
+            text("● design input (standard)  ● kernel-derived  ● assumed", insL + 30, yy - 2, T.ink3, 0);
             return yy - 18;
         });
         section("frames", "Coordinate frames", c.frames.empty() ? "none" : c.frames.front().id, [&](S32 yy) {
@@ -2771,8 +2785,42 @@ void LLFloaterFinalverseShell::draw()
         static double finishedAt = 0;
         const bool terminal = ai.stage == "done" || ai.stage == "refused" || ai.stage == "cancelled";
         if (terminal && finishedId != ai.id + ai.stage) { finishedId = ai.id + ai.stage; finishedAt = t; }
-        const bool expired = terminal && t - finishedAt > 20.0;
-        if (!ai.stage.empty() && !expired)
+        const bool expired = terminal && t - finishedAt > (ai.answer.empty() ? 20.0 : 60.0);
+        if (!ai.stage.empty() && !expired && !ai.answer.empty())
+        {
+            // Grounded answer: the model's wording, then the catalog facts it may use, each with its class.
+            const S32 cl2 = barL, cr2 = barR, cb2 = chipY + 22 + (c.domain == "engineering" && m->mode != Mode::Develop ? 56 : 0);
+            std::vector<std::pair<std::string, std::string>> shownFacts;
+            for (auto& f : ai.facts) if (f.first != "catalog" && shownFacts.size() < 5 && std::none_of(shownFacts.begin(), shownFacts.end(), [&](auto& x) { return x.second == f.second; })) shownFacts.push_back(f);
+            const S32 ct2 = cb2 + 120 + 17 * 4 + 17 * 3 + (S32)shownFacts.size() * 17 + 30;
+            panel(cl2, ct2, cr2, cb2, 16.f, true);
+            roundRect(cl2 + 16, ct2 - 12, cl2 + 28 + width("ANSWER", 0, true), ct2 - 32, 9, alpha(T.live, .18f));
+            text("ANSWER", cl2 + 22, ct2 - 26, T.live, 0, true);
+            text(clip(ai.query, cr2 - cl2 - 260, 0, true), cl2 + 40 + width("ANSWER", 0, true), ct2 - 26, T.ink, 0, true);
+            {
+                LLRect br(cr2 - 100, ct2 - 10, cr2 - 16, ct2 - 34);
+                roundRect(br.mLeft, br.mTop, br.mRight, br.mBottom, 12, T.surfaceHi);
+                text("Dismiss", cr2 - 58, ct2 - 27, T.ink, 0, true, LLFontGL::HCENTER);
+                m->hit(br, [] { finishedAt = -100; }, "ai-Dismiss");
+            }
+            S32 y = ct2 - 54;
+            text("FROM THE CATALOG · " + ai.subject, cl2 + 18, y, T.ink3, 0, true);
+            y = wrapped(ai.answer, cl2 + 18, y - 18, cr2 - cl2 - 36, T.ink, 0, 4) - 6;
+            text("GENERAL BACKGROUND · not from the catalog", cl2 + 18, y, T.ink3, 0, true);
+            y = wrapped(ai.general, cl2 + 18, y - 18, cr2 - cl2 - 36, T.ink2, 0, 3) - 6;
+            text("FACTS USED", cl2 + 18, y, T.ink3, 0, true);
+            y -= 18;
+            for (auto& f : shownFacts)
+            {
+                const LLColor4 col = f.first.find("assum") != std::string::npos ? T.warn : f.first.find("kernel") != std::string::npos ? T.derived : f.first.find("design") != std::string::npos ? T.authentic : T.ink3;
+                dot((F32)cl2 + 22, (F32)y + 4, 3, col);
+                text(clip(f.first + " · " + f.second, cr2 - cl2 - 50, 0), cl2 + 32, y, T.ink2, 0);
+                y -= 17;
+            }
+            text("Grounded answer · catalog facts via FVP · no world changes", cl2 + 18, cb2 + 10, T.ink3, 0);
+            if (!ai.model.empty() || ai.planSeconds > 0) text(fmt(ai.planSeconds, 1) + " s", cr2 - 18, cb2 + 10, T.ink3, 0, false, LLFontGL::RIGHT);
+        }
+        else if (!ai.stage.empty() && !expired)
         {
             struct Step { std::string label; int state; };  // 0 pending, 1 running, 2 done, 3 failed
             std::vector<Step> steps;
