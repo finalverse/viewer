@@ -487,6 +487,8 @@ struct Engine
         const auto s = fv_spatial_connect(spatialHost.c_str(), spatialPort, token.c_str(), "FINALVERSE Viewer", 4000, &client, err, sizeof err);
         if (s != FV_SPATIAL_OK)
         {
+            if (model.spatialUp || model.spatialError.empty())
+                LL_INFOS("FinalverseShell") << "spatial service unavailable: " << fv_spatial_status_text(s) << " " << err << LL_ENDL;
             model.spatialUp = false;
             model.spatialError = std::string(fv_spatial_status_text(s)) + ": " + err;
             client = nullptr;
@@ -529,6 +531,7 @@ struct Engine
         }
         if (s == FV_SPATIAL_TRANSPORT || s == FV_SPATIAL_TIMEOUT || s == FV_SPATIAL_PROTOCOL)
         {
+            LL_INFOS("FinalverseShell") << "spatial service unavailable during " << op << ": " << fv_spatial_status_text(s) << " " << why << LL_ENDL;
             fv_spatial_close(client);
             client = nullptr;
             model.spatialUp = false;
@@ -961,7 +964,11 @@ struct Engine
     {
         if (!replica) return;
         model.live.struct_size = sizeof model.live;
+        const auto previousState = model.live.state;
         ms_replica_get_status(replica, &model.live);
+        if (model.live.state != previousState)
+            LL_INFOS("FinalverseShell") << "live state " << (int)previousState << " -> " << (int)model.live.state << " revision=" << model.live.revision
+                                        << " resyncs=" << model.live.resyncs << " reconnects=" << model.live.reconnects << LL_ENDL;
         if (model.live.version != lastLiveVersion)
         {
             lastLiveVersion = model.live.version;
@@ -1143,6 +1150,14 @@ struct Engine
         try
         {
             fs::path dir(frames);
+            // A restarted renderer starts from an empty directory: give it the current context again.
+            if (!model.ctx.scene.empty() && !fs::exists(dir / "context.json"))
+            {
+                std::vector<std::string> hl;
+                if (auto it = model.ctx.selectable.find(model.selected); it != model.ctx.selectable.end()) hl = it->second;
+                writeContext(model.ctx, currentManifest, "none", hl);
+                LL_INFOS("FinalverseShell") << "renderer restarted: context re-sent control_seq=" << model.controlSeq << LL_ENDL;
+            }
             if (!fs::exists(dir / "frame.json")) return;
             auto t = fs::last_write_time(dir / "frame.json");
             if (t == frameTime && frame) return;
