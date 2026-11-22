@@ -723,6 +723,7 @@ struct Engine
                         { "cas", cm->second.objects }, { "definition_sha256", wd },
                         { "focus", bj::object{ { "center", bj::array{ c.focus[0], c.focus[1], c.focus[2] } }, { "extent", bj::array{ c.focus[3], c.focus[4], c.focus[5] } } } },
                         { "transition", reducedMotion ? "none" : transition }, { "live", man.contains("live") }, { "orbit", orbit } };
+        if (reducedMotion) ctl["reduced_motion"] = true;
         bj::object cam{ { "yaw", camYaw }, { "pitch", camPitch } };
         if (camDistance > 0) cam["distance_m"] = camDistance;
         ctl["camera"] = cam;

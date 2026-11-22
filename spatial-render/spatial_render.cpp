@@ -70,7 +70,7 @@ void save(const fs::path &p, const std::string &s) {
 
 struct Control {
   std::string context, fwd, cas, definition, transition = "semantic", lighting = "daylight", target;
-  bool live = false, orbit = false, has_camera = false;
+  bool live = false, orbit = false, has_camera = false, reduced_motion = false;
   Vec center{}, extent{};
   double yaw = .6, pitch = -.45, distance = 0;
   std::set<std::string> highlight;
@@ -83,7 +83,7 @@ Control control(const std::string &raw) {
   using namespace living;
   auto d = parse(raw);
   keys(d, {"schema", "sequence", "context", "fwd", "cas", "definition_sha256", "focus", "transition"},
-       {"live", "camera", "highlight", "overlays", "lighting", "orbit", "target_resident"});
+       {"live", "camera", "highlight", "overlays", "lighting", "orbit", "target_resident", "reduced_motion"});
   require(text(d["schema"]) == "finalverse.storm-scene-context/0.1", "context schema");
   Control c;
   c.sequence = integer(d["sequence"]);
@@ -101,6 +101,7 @@ Control control(const std::string &raw) {
   require(c.transition == "semantic" || c.transition == "geometric" || c.transition == "none", "transition kind");
   if (d.HasMember("live")) { require(d["live"].IsBool(), "live boolean"); c.live = d["live"].GetBool(); }
   if (d.HasMember("orbit")) { require(d["orbit"].IsBool(), "orbit boolean"); c.orbit = d["orbit"].GetBool(); }
+  if (d.HasMember("reduced_motion")) { require(d["reduced_motion"].IsBool(), "reduced_motion boolean"); c.reduced_motion = d["reduced_motion"].GetBool(); }
   if (d.HasMember("lighting")) {
     c.lighting = text(d["lighting"]);
     require(c.lighting == "daylight" || c.lighting == "sunset" || c.lighting == "studio", "lighting preset");
@@ -330,7 +331,9 @@ int main(int argc, char **argv) {
               pitch = std::max(desiredPitch - .25, -1.35);
               yaw = desiredYaw - .55;
               transitionStart = std::chrono::duration<double>(Clock::now() - started).count();
-            } else if (newContext) {
+            } else if (newContext || c.reduced_motion) {
+              // Reduced motion: every camera change (geometric zoom, keys, reset) is applied
+              // at once instead of eased.
               focus = desiredFocus;
               distance = desiredDistance;
               pitch = desiredPitch;
