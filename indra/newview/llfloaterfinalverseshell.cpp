@@ -54,6 +54,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <regex>
 #include <sstream>
 #include <thread>
 #include <vector>
@@ -387,8 +388,12 @@ struct Model
     std::string navTarget, navStage;
     uint64_t controlSeq = 0;
     std::string presentation = "realistic";  // Ω-XIX engineering presentation preset (display only)
-    std::vector<std::string> history;
+    std::vector<std::string> history, historyEntities;
     size_t historyCursor = 0;
+    // Ω-XIX command palette: entity search results (scope-filtered by the spatial service).
+    struct Found { std::string entity, label, kind, domain; };
+    std::string searchQuery;
+    std::vector<Found> found;
     std::string selected, selectedLabel;
     // live world
     bool liveConfigured = false;
@@ -398,6 +403,19 @@ struct Model
     std::string registrationLabel;
     // renderer
     std::shared_ptr<const Frame> frame;
+    // Ω-XIX creation (AI World Director draft + user-approved publication)
+    struct CreationObject { std::string id, label, asset, material, sha; double x = 0, y = 0, rot = 0; };
+    struct Creation
+    {
+        std::string stage, message, request, draftId, name, summary, model, zone, pubStage, pubMessage, receipt, selected;
+        uint64_t revision = 0;
+        bool valid = false, published = false, previewActive = false;
+        std::vector<std::string> findings, edits, pubSteps, checks;
+        std::vector<CreationObject> objects;
+        double seconds = 0, planSeconds = 0;
+        size_t histCursor = 0, histSize = 0;
+        std::map<std::string, std::vector<std::string>> materials;  // asset -> offered materials
+    } creation;
     // AI + actions
     AiCard ai;
     std::string actionNote;
@@ -409,6 +427,9 @@ struct Engine
 {
     // configuration
     std::string spatialHost = "127.0.0.1", tokenFile, frames, navigatorDir, livingDir, startEntity, casMapFile;
+    std::string creationDir, publisherDir, creationRequestId, publishRequestId;  // Ω-XIX creation channels
+    Clock::time_point creationStarted = Clock::now();
+    bj::object creationPreview;
     uint16_t spatialPort = 7871;
     bool reducedMotion = false;
     struct Cas { std::string fwdDir, fwdFile, objects; };
@@ -466,6 +487,8 @@ struct Engine
         tokenFile = env("FINALVERSE_SPATIAL_TOKEN_FILE");
         frames = env("FINALVERSE_STORM_FRAMES");
         navigatorDir = env("FINALVERSE_NAVIGATOR_DIR");
+        creationDir = env("FINALVERSE_CREATION_DIR");
+        publisherDir = env("FINALVERSE_PUBLISHER_DIR");
         livingDir = env("FINALVERSE_WORLD_INTERACTION_DIR");
         startEntity = env("FINALVERSE_START_ENTITY");
         casMapFile = env("FINALVERSE_CAS_MAP");
@@ -689,6 +712,7 @@ struct Engine
                     for (auto& a : o.at("assets").as_array()) c.selectable[str(o, "entity")].push_back(std::string(a.as_string()));
                 }
             pan[0] = pan[1] = pan[2] = 0;  // a new context starts framed on its own focus
+            model.creation.previewActive = false;
             frameSelection = false;
             writeContext(c, man, c.transition == "none" ? "semantic" : c.transition, {});
             currentManifest = man;
@@ -843,7 +867,8 @@ struct Engine
         {
             auto h = bj::parse(std::string_view(js, len)).as_object();
             model.history.clear();
-            for (auto& e : h.at("entries").as_array()) model.history.push_back(str(e.as_object(), "label"));
+            model.historyEntities.clear();
+            for (auto& e : h.at("entries").as_array()) { model.history.push_back(str(e.as_object(), "label")); model.historyEntities.push_back(str(e.as_object(), "entity")); }
             model.historyCursor = h.at("cursor").to_number<size_t>();
         }
         catch (...) {}
@@ -869,8 +894,218 @@ struct Engine
     }
 
     // ------------------------------------------------------------------ AI Spatial Navigator
+    // ------------------------------------------------------------------ Ω-XIX creation
+    static bool creationIntent(const std::string& text)
+    {
+        static const std::regex verbs("\\b(create|build|design|set up|add|make|furnish|lay out)\\b", std::regex::icase);
+        return std::regex_search(text, verbs);
+    }
+    void creationRequest(bj::object req)
+    {
+        if (!privateDir(creationDir)) { toast("The World Director is not configured"); return; }
+        creationRequestId = LLUUID::generateNewID().asString();
+        req["schema"] = "finalverse.creation-request/0.1";
+        req["id"] = creationRequestId;
+        creationStarted = Clock::now();
+        model.creation.stage = "working";
+        writePrivate(fs::path(creationDir) / "request.json", bj::serialize(req));
+        LL_INFOS("FinalverseShell") << "creation request kind=" << str(req, "kind") << " id=" << creationRequestId << LL_ENDL;
+    }
+    void create(const std::string& text)
+    {
+        model.creation = Model::Creation{};
+        model.creation.request = text;
+        model.creation.message = "The World Director is proposing a typed creation plan…";
+        creationRequest({ { "kind", "create" }, { "text", text }, { "context_entity", model.ctx.entity } });
+    }
+    void creationEdit(const std::string& op, const std::string& object, bj::value value)
+    {
+        if (model.creation.draftId.empty() || model.creation.published) return;
+        model.creation.message = "Applying " + op + "…";
+        creationRequest({ { "kind", "edit" }, { "draft_id", model.creation.draftId }, { "op", op }, { "object", object }, { "value", value } });
+    }
+    void creationHistory(bool redo)
+    {
+        if (model.creation.draftId.empty() || model.creation.published) return;
+        creationRequest({ { "kind", redo ? "redo" : "undo" }, { "draft_id", model.creation.draftId } });
+    }
+    void previewDraft(bool first)
+    {
+        if (creationPreview.empty() || !privateDir(frames)) return;
+        const auto& pv = creationPreview;
+        auto& focus = pv.at("focus").as_object();
+        std::vector<std::string> hl;
+        for (auto& o : model.creation.objects) if (o.id == model.creation.selected) hl.push_back(o.sha);
+        bj::object ctl{ { "schema", "finalverse.storm-scene-context/0.2" }, { "sequence", ++model.controlSeq }, { "context", str(pv, "context_id") },
+                        { "fwd", str(pv, "fwd") }, { "cas", str(pv, "cas") }, { "definition_sha256", str(pv, "definition_sha256") },
+                        { "focus", bj::object{ { "center", focus.at("center") }, { "extent", focus.at("extent") } } },
+                        { "transition", reducedMotion ? "none" : (first ? "semantic" : "none") }, { "live", false }, { "orbit", false } };
+        if (reducedMotion) ctl["reduced_motion"] = true;
+        bj::object cam{ { "yaw", first ? .35 : camYaw }, { "pitch", first ? -.55 : camPitch } };
+        if (first) { camYaw = .35; camPitch = -.55; camDistance = 0; }
+        if (camDistance > 0 && !first) cam["distance_m"] = camDistance;
+        ctl["camera"] = cam;
+        bj::array h;
+        for (auto& x : hl) h.push_back(bj::value(x));
+        ctl["highlight"] = h;
+        writePrivate(fs::path(frames) / "context.json", bj::serialize(ctl));
+        model.creation.previewActive = true;
+        navStart = Clock::now();
+        model.navigating = true;
+    }
+    void selectDraftObject(const std::string& id)
+    {
+        model.creation.selected = id;
+        previewDraft(false);
+    }
+    void pollCreation()
+    {
+        if (creationRequestId.empty() || model.creation.stage != "working") return;
+        if (Clock::now() - creationStarted > std::chrono::seconds(180)) { model.creation.stage = "refused"; model.creation.message = "The World Director did not answer within 180 s; nothing changed."; return; }
+        auto raw = readSmall(fs::path(creationDir) / "status.json", 4 << 20);
+        if (raw.empty()) return;
+        try
+        {
+            auto j = bj::parse(raw).as_object();
+            if (str(j, "schema") != "finalverse.creation-status/0.1" || str(j, "id") != creationRequestId) return;
+            const std::string stage = str(j, "stage");
+            if (stage == "working") return;
+            auto& c = model.creation;
+            c.message = str(j, "message");
+            c.seconds = std::chrono::duration<double>(Clock::now() - creationStarted).count();
+            if (stage == "refused") { c.stage = c.draftId.empty() ? "refused" : "preview_ready"; toast(c.message); LL_INFOS("FinalverseShell") << "creation refused: " << c.message << LL_ENDL; return; }
+            auto& d = j.at("draft").as_object();
+            const bool first = c.draftId != str(d, "draft_id");
+            c.draftId = str(d, "draft_id");
+            c.revision = d.at("revision").to_number<uint64_t>();
+            c.name = str(d, "name");
+            for (auto& ch : c.name) if (ch == '_') ch = ' ';
+            c.summary = str(d, "summary");
+            c.zone = str(d, "zone_label");
+            auto& v = d.at("validation").as_object();
+            c.valid = v.at("passed").as_bool();
+            c.findings.clear();
+            for (auto& f : v.at("findings").as_array()) c.findings.push_back(str(f.as_object(), "message"));
+            c.checks.clear();
+            for (auto& kv : v.at("checks").as_object()) c.checks.push_back(std::string(kv.key()) + (kv.value().as_bool() ? " ✓" : " ✕"));
+            c.objects.clear();
+            for (auto& o : d.at("objects").as_array())
+            {
+                auto& x = o.as_object();
+                Model::CreationObject co{ str(x, "id"), str(x, "label"), str(x, "asset"), str(x, "material"), str(x, "sha256") };
+                co.x = num(x.at("position").as_array()[0]);
+                co.y = num(x.at("position").as_array()[1]);
+                co.rot = num(x.at("rotation_deg"));
+                c.objects.push_back(co);
+            }
+            if (c.selected.empty() || std::none_of(c.objects.begin(), c.objects.end(), [&](auto& o) { return o.id == c.selected; }))
+                c.selected = c.objects.empty() ? std::string() : c.objects.front().id;
+            auto& h = d.at("history").as_object();
+            c.histCursor = h.at("cursor").to_number<size_t>();
+            c.histSize = h.at("revisions").as_array().size();
+            c.edits.clear();
+            for (auto& e : d.at("edits").as_array()) c.edits.push_back(str(e.as_object(), "description"));
+            if (auto* pv = d.if_contains("provenance")) c.model = str(pv->as_object(), "model");
+            if (auto* st = d.if_contains("steps"))
+                for (auto& s2 : st->as_array()) if (str(s2.as_object(), "stage") == "plan" && s2.as_object().contains("seconds")) c.planSeconds = num(s2.as_object().at("seconds"));
+            c.published = str(d.at("publication").as_object(), "status") == "published";
+            creationPreview = d.at("preview").as_object();
+            c.stage = "preview_ready";
+            LL_INFOS("FinalverseShell") << "creation preview draft=" << c.draftId << " revision=" << c.revision << " objects=" << c.objects.size() << " valid=" << c.valid
+                                        << " seconds=" << fmt(c.seconds, 1) << " " << c.message << LL_ENDL;
+            previewDraft(first);
+        }
+        catch (const std::exception& e) { LL_WARNS("FinalverseShell") << "creation status: " << e.what() << LL_ENDL; }
+    }
+    std::string ownerPrincipal() const
+    {
+        const char* tokenPath = std::getenv("FINALVERSE_LIVE_TOKENS");
+        if (!tokenPath) return {};
+        try
+        {
+            auto j = bj::parse(readSmall(tokenPath, 65536)).as_object();
+            for (auto& kv : j.at("tokens").as_object()) { std::string k(kv.key()); if (k.rfind("owner:", 0) == 0) return k.substr(6); }
+        }
+        catch (...) {}
+        return {};
+    }
+    // Called only from the confirmation dialog's Approve action (the owner's explicit decision).
+    void publishApproved()
+    {
+        auto& c = model.creation;
+        if (c.draftId.empty() || !c.valid || c.published) { toast("Only a valid, unpublished draft can be published"); return; }
+        if (!privateDir(publisherDir)) { toast("The publisher is not configured"); return; }
+        const std::string owner = ownerPrincipal();
+        if (owner.empty()) { toast("No owner identity is available for approval"); return; }
+        publishRequestId = LLUUID::generateNewID().asString();
+        bj::object req{ { "schema", "finalverse.publication-request/0.1" }, { "id", publishRequestId }, { "draft_id", c.draftId }, { "revision", c.revision },
+                        { "approval", bj::object{ { "decision", "approved" }, { "principal", owner }, { "via", "FINALVERSE Viewer confirmation dialog" },
+                                                  { "statement", "Publish draft '" + c.name + "' revision " + std::to_string(c.revision) + " to the live world" },
+                                                  { "approved_at", (int64_t)std::time(nullptr) } } } };
+        writePrivate(fs::path(publisherDir) / "request.json", bj::serialize(req));
+        c.pubStage = "publishing";
+        c.pubMessage = "Publishing…";
+        c.pubSteps.clear();
+        LL_INFOS("FinalverseShell") << "publication approved by owner=" << owner << " draft=" << c.draftId << " revision=" << c.revision << LL_ENDL;
+    }
+    void pollPublisher()
+    {
+        auto& c = model.creation;
+        if (publishRequestId.empty() || c.pubStage != "publishing") return;
+        auto raw = readSmall(fs::path(publisherDir) / "status.json", 1 << 20);
+        if (raw.empty()) return;
+        try
+        {
+            auto j = bj::parse(raw).as_object();
+            if (str(j, "id") != publishRequestId) return;
+            c.pubSteps.clear();
+            if (auto* st = j.if_contains("steps")) for (auto& s2 : st->as_array()) c.pubSteps.push_back(str(s2.as_object(), "step"));
+            c.pubMessage = str(j, "message");
+            const std::string stage = str(j, "stage");
+            if (stage == "published")
+            {
+                c.pubStage = "published";
+                c.published = true;
+                auto& r = j.at("receipt").as_object();
+                c.receipt = "catalog edition " + std::to_string(r.at("spatialdb").as_object().at("catalog_edition").to_number<int64_t>()) + " · MutSea revision " +
+                            std::to_string(r.at("mutsea").as_object().at("head_after").to_number<int64_t>());
+                const std::string lab = str(r.at("spatialdb").as_object(), "lab_entity");
+                LL_INFOS("FinalverseShell") << "publication done " << c.receipt << " lab=" << lab << " total_s=" << fmt(num(r.at("timings").as_object().at("total_s")), 2) << LL_ENDL;
+                model.creation.previewActive = false;
+                navigate(lab);  // the published lab, served by SpatialDB from the new edition
+            }
+            else if (stage == "refused") { c.pubStage = "refused"; toast("Publication refused: " + c.pubMessage); LL_INFOS("FinalverseShell") << "publication refused: " << c.pubMessage << LL_ENDL; }
+        }
+        catch (const std::exception& e) { LL_WARNS("FinalverseShell") << "publisher status: " << e.what() << LL_ENDL; }
+    }
+
+    // Ω-XIX: palette entity search over FVP SPATIAL.DISCOVER (results already scope-filtered).
+    void search(const std::string& q)
+    {
+        model.searchQuery = q;
+        model.found.clear();
+        if (q.size() < 2 || !client) return;
+        bj::object out;
+        std::string why;
+        if (call("SPATIAL.DISCOVER", { { "query", q }, { "limit", 6 } }, out, why) != FV_SPATIAL_OK) return;
+        for (auto& e : out.at("entities").as_array())
+        {
+            auto& o = e.as_object();
+            model.found.push_back({ str(o, "entity"), str(o, "label"), str(o, "kind"), str(o, "domain") });
+        }
+    }
+    // Set from the UI thread directly (the engine may be inside a synchronous route execution).
+    std::atomic<bool> aiCancel{false};
+    std::string lastAsk;
     void ask(const std::string& text)
     {
+        if (!creationDir.empty() && creationIntent(text) && !std::regex_search(text, std::regex("\\b(take me|go to|show me|navigate)\\b", std::regex::icase)))
+        {
+            create(text);
+            return;
+        }
+        aiCancel = false;
+        lastAsk = text;
         model.ai = AiCard{};
         model.ai.query = text;
         if (!privateDir(navigatorDir))
@@ -903,6 +1138,14 @@ struct Engine
     void pollAi()
     {
         if (aiRequestId.empty() || model.ai.stage != "planning") return;
+        if (aiCancel)
+        {
+            model.ai.stage = "cancelled";
+            model.ai.message = "Cancelled before any step ran; nothing was executed.";
+            LL_INFOS("FinalverseShell") << "ai cancelled id=" << aiRequestId << " stage=planning" << LL_ENDL;
+            aiRequestId.clear();
+            return;
+        }
         if (Clock::now() - aiStarted > std::chrono::seconds(120))
         {
             model.ai.stage = "refused";
@@ -936,6 +1179,13 @@ struct Engine
                 c.stage = "executing";
                 for (size_t i = 0; i < route.size(); ++i)
                 {
+                    if (aiCancel)
+                    {
+                        model.ai.stage = "cancelled";
+                        model.ai.message = "Cancelled after " + std::to_string(i) + " of " + std::to_string(route.size()) + " steps; navigation stopped where it was.";
+                        LL_INFOS("FinalverseShell") << "ai cancelled id=" << aiRequestId << " after_steps=" << i << LL_ENDL;
+                        return;
+                    }
                     model.ai.executing = i + 1;
                     publish();
                     const bool last = i + 1 == route.size();
@@ -951,7 +1201,7 @@ struct Engine
     void waitSettled(double dwell)
     {
         const auto t0 = Clock::now();
-        while (!stop && std::chrono::duration<double>(Clock::now() - t0).count() < 6.0)
+        while (!stop && !aiCancel && std::chrono::duration<double>(Clock::now() - t0).count() < 6.0)
         {
             tickFrames();
             tickLive();
@@ -1273,6 +1523,7 @@ struct Engine
         {
             fs::path dir(frames);
             // A restarted renderer starts from an empty directory: give it the current context again.
+            if (model.creation.previewActive && !fs::exists(dir / "context.json")) { previewDraft(false); return; }
             if (!model.ctx.scene.empty() && !fs::exists(dir / "context.json"))
             {
                 std::vector<std::string> hl;
@@ -1355,6 +1606,8 @@ struct Engine
             tickLive();
             tickFrames();
             pollAi();
+            pollCreation();
+            pollPublisher();
             while (!model.toasts.empty() && Clock::now() - model.toasts.front().second > std::chrono::seconds(6)) model.toasts.pop_front();
             publish();
             // The native transport is polled at ~250 Hz so a published frame waits at most ~4 ms.
@@ -1461,6 +1714,20 @@ struct LLFloaterFinalverseShell::Impl
     std::vector<std::string> focusOrder;
     int focusIndex = -1;
     bool showHelp = false, dragging = false, dragMoved = false;
+    // Ω-XIX command palette (Ctrl/Cmd+K): keyboard-first, context- and permission-aware.
+    bool paletteOpen = false;
+    std::string paletteQuery;
+    int paletteSel = 0;
+    struct PaletteItem { std::string group, label, detail; bool enabled = true; std::function<void()> run; };
+    std::vector<PaletteItem> paletteItems;  // rebuilt every frame from the snapshot
+    struct SavedView { std::string label, entity, presentation; };
+    std::vector<SavedView> savedViews;
+    // Ω-XIX publication confirmation dialog (the owner's explicit approval).
+    bool confirmPublish = false;
+    // Ω-XIX progressive inspector: advanced sections the user opened.
+    std::set<std::string> openSections;
+    void openPalette() { paletteOpen = true; paletteQuery.clear(); paletteSel = 0; }
+    void closePalette() { paletteOpen = false; paletteQuery.clear(); }
     S32 dragX = 0, dragY = 0;
     Clock::time_point opened = Clock::now(), lastNavStart{}, lastCamera = Clock::now();
     std::string lastContext;
@@ -1605,9 +1872,56 @@ bool LLFloaterFinalverseShell::handleScrollWheel(S32, S32, S32 clicks)
     return true;
 }
 
+bool LLFloaterFinalverseShell::handleUnicodeCharHere(llwchar ch)
+{
+    if (m->paletteOpen && ch >= 32 && ch != 127)
+    {
+        m->paletteQuery += wstring_to_utf8str(LLWString(1, ch));
+        m->paletteSel = 0;
+        if (m->engine) m->engine->post([e = m->engine.get(), q = m->paletteQuery] { e->search(q); });
+        return true;
+    }
+    return LLFloater::handleUnicodeCharHere(ch);
+}
+
 bool LLFloaterFinalverseShell::handleKeyHere(KEY key, MASK mask)
 {
     auto* ask = getChild<LLLineEditor>("ask");
+    // Ω-XIX command palette: Ctrl/Cmd+K toggles; while open it owns the keyboard.
+    if (m->confirmPublish)
+    {
+        if (key == KEY_ESCAPE) { m->confirmPublish = false; return true; }
+        if (key == KEY_RETURN && m->engine && m->view && m->view->creation.valid) { m->confirmPublish = false; m->engine->post([e = m->engine.get()] { e->publishApproved(); }); return true; }
+        return true;
+    }
+    if (key == 'K' && (mask & MASK_CONTROL)) { if (m->paletteOpen) m->closePalette(); else { m->openPalette(); setFocus(true); gFocusMgr.setKeyboardFocus(this); } return true; }
+    if (m->paletteOpen)
+    {
+        const int n = (int)m->paletteItems.size();
+        if (key == KEY_ESCAPE) { m->closePalette(); return true; }
+        if (key == KEY_DOWN) { if (n) m->paletteSel = (m->paletteSel + 1) % n; return true; }
+        if (key == KEY_UP) { if (n) m->paletteSel = (m->paletteSel + n - 1) % n; return true; }
+        if (key == KEY_BACKSPACE)
+        {
+            if (!m->paletteQuery.empty()) { LLWString w = utf8str_to_wstring(m->paletteQuery); w.pop_back(); m->paletteQuery = wstring_to_utf8str(w); }
+            m->paletteSel = 0;
+            if (m->engine) m->engine->post([e = m->engine.get(), q = m->paletteQuery] { e->search(q); });
+            return true;
+        }
+        if (key == KEY_RETURN)
+        {
+            if (m->paletteSel < n && m->paletteItems[m->paletteSel].enabled)
+            {
+                auto run = m->paletteItems[m->paletteSel].run;
+                LL_INFOS("FinalverseShell") << "palette run group=" << m->paletteItems[m->paletteSel].group << " label=" << m->paletteItems[m->paletteSel].label << LL_ENDL;
+                m->closePalette();
+                run();
+            }
+            else if (n == 0 && !m->paletteQuery.empty() && m->engine) { auto q = m->paletteQuery; m->closePalette(); m->engine->post([e = m->engine.get(), q] { e->ask(q); }); }
+            return true;
+        }
+        return true;  // swallow other keys while the palette is open
+    }
     if (ask->hasFocus())
     {
         // Typing stays in the field; Esc leaves it, and non-text shortcuts still work.
@@ -1620,7 +1934,7 @@ bool LLFloaterFinalverseShell::handleKeyHere(KEY key, MASK mask)
     if (!m->engine) return LLFloater::handleKeyHere(key, mask);
     Engine* e = m->engine.get();
     if (key == '?' || (key == '/' && (mask & MASK_SHIFT))) { m->showHelp = !m->showHelp; return true; }
-    if ((key == 'K' && (mask & MASK_CONTROL)) || key == '/') { ask->setFocus(true); return true; }
+    if (key == '/') { ask->setFocus(true); return true; }
     if (key == KEY_LEFT && (mask & MASK_ALT)) { e->post([e] { e->back(false); }); return true; }
     if (key == KEY_RIGHT && (mask & MASK_ALT)) { e->post([e] { e->back(true); }); return true; }
     if ((key == '=' || key == KEY_ADD) && (mask & MASK_CONTROL)) { gScale = llmin(gScale + 1, 2); return true; }
@@ -1656,6 +1970,24 @@ bool LLFloaterFinalverseShell::handleKeyHere(KEY key, MASK mask)
         return true;
     }
     if (key == 'O') { e->post([e] { e->orbit = !e->orbit; e->camera(0, 0, 1.0); }); return true; }
+    if (key == KEY_ESCAPE && m->view && (m->view->ai.stage == "planning" || m->view->ai.stage == "executing")) { e->aiCancel = true; return true; }
+    // Ω-XIX draft editing in Create mode (keyboard-first; same operations as the panel buttons).
+    if (m->mode == Mode::Create && m->view && !m->view->creation.draftId.empty() && !m->view->creation.published)
+    {
+        const std::string o = m->view->creation.selected;
+        const double step = (mask & MASK_SHIFT) ? .1 : .5;
+        if ((key == 'Z') && (mask & MASK_CONTROL)) { e->post([e, redo = (mask & MASK_SHIFT) != 0] { e->creationHistory(redo); }); return true; }
+        if (!o.empty() && mask != MASK_CONTROL)
+        {
+            if (key == KEY_LEFT) { e->post([e, o, step] { e->creationEdit("move", o, bj::array{ -step, 0.0 }); }); return true; }
+            if (key == KEY_RIGHT) { e->post([e, o, step] { e->creationEdit("move", o, bj::array{ step, 0.0 }); }); return true; }
+            if (key == KEY_UP) { e->post([e, o, step] { e->creationEdit("move", o, bj::array{ 0.0, step }); }); return true; }
+            if (key == KEY_DOWN) { e->post([e, o, step] { e->creationEdit("move", o, bj::array{ 0.0, -step }); }); return true; }
+            if (key == '[' || key == ']') { e->post([e, o, d = key == '[' ? 15.0 : -15.0] { e->creationEdit("rotate", o, d); }); return true; }
+            if (key == 'M') { e->post([e, o] { e->creationEdit("material", o, nullptr); }); return true; }
+            if (key == KEY_DELETE) { e->post([e, o] { e->creationEdit("remove", o, nullptr); }); return true; }
+        }
+    }
     if (key == KEY_ESCAPE) { m->focusIndex = -1; m->showHelp = false; e->post([e] { e->select({}, {}); }); return true; }
     if (key == KEY_LEFT) { e->post([e] { e->camera(-.12, 0, 1.0); }); return true; }
     if (key == KEY_RIGHT) { e->post([e] { e->camera(.12, 0, 1.0); }); return true; }
@@ -1968,70 +2300,261 @@ void LLFloaterFinalverseShell::draw()
     const S32 insR = W - 20, insL = W - (compact ? 300 : 380), insTop = crumbY - 78, insBottom = 120;
     if (m->mode == Mode::Analyze && !c.entity.empty())
     {
+        // Ω-XIX progressive inspector: an overview first (what it is, how it is shown, its
+        // primary dimensions, material if the catalog states one, key actions); technical
+        // detail sits in sections the user opens (geometry, frames, representations,
+        // provenance, validation).
         panel(insL, insTop, insR, insBottom);
+        const S32 innerW = insR - insL - 36;
         S32 y = insTop - 28;
         icon(Icon::Ruler, (F32)insL + 24, (F32)y + 4, T.accent, .8f);
         text("INSPECTOR", insL + 40, y, T.ink3, 0, true);
-        y -= 26;
-        text(clip(c.repLabel.empty() ? c.repKind : c.repLabel, insR - insL - 36, 1, true), insL + 18, y, T.ink, 1, true);
+        text(kindTitle(c.kind), insR - 18, y, T.ink3, 0, false, LLFontGL::RIGHT);
+        y -= 28;
+        text(clip(c.label, innerW, 2, true), insL + 18, y, T.ink, 2, true);
         y -= 22;
-        // Representations of the same identity.
-        text("REPRESENTATIONS · same entity", insL + 18, y, T.ink3, 0, true);
-        y -= 18;
-        for (auto& r : c.reps)
-        {
-            if (y < insBottom + 200) break;
-            const bool cur = r.id == c.repId;
-            const LLColor4 col = !r.authorized ? T.ink3 : cur ? T.accent : T.ink2;
-            dot((F32)insL + 24, (F32)y + 4, 3.5f, col);
-            text(r.kind, insL + 34, y, col, 0, cur);
-            text(r.authorized ? r.units : "requires " + std::string(r.caps.empty() ? "" : "") + "engineering scope", insR - 18, y, r.authorized ? T.ink3 : T.warn, 0, false, LLFontGL::RIGHT);
-            if (r.authorized && !r.scene.empty() && !cur)
-                m->hit(LLRect(insL + 10, y + 12, insR - 10, y - 6), [eng, e = c.entity, k = r.kind] { eng->post([eng, e, k] { eng->navigate(e, {}, true, k); }); }, "rep-" + r.id);
-            y -= 18;
-        }
-        // Engineering properties (kernel-computed, with method).
+        if (!c.description.empty()) y = wrapped(c.description, insL + 18, y, innerW, T.ink2, 0, 3) - 4;
+        // Visual representation.
+        std::string units;
+        for (auto& r : c.reps) if (r.id == c.repId) units = r.units;
+        text("Shown as", insL + 18, y, T.ink3, 0);
+        text(clip((c.repLabel.empty() ? c.repKind : c.repLabel) + (units.empty() ? "" : " · " + units), innerW - 80, 0), insL + 88, y, T.ink, 0);
+        y -= 20;
+        // Primary dimensions (kernel-derived or design inputs, coloured by classification).
         std::vector<Property> props;
         for (auto& r : c.reps) if (r.kind == "cad_brep" && r.authorized) props = r.props;
         if (props.empty()) for (auto& r : c.reps) if (r.id == c.repId) props = r.props;
-        if (!props.empty())
+        auto findProp = [&](const char* n) -> const Property* { for (auto& p : props) if (p.name == n) return &p; return nullptr; };
+        std::vector<const Property*> primary;
+        for (const char* n : { "bore_d", "outside_D", "width_B" }) if (auto* p = findProp(n)) primary.push_back(p);
+        if (primary.empty()) for (const char* n : { "envelope_x", "envelope_y", "envelope_z" }) if (auto* p = findProp(n)) primary.push_back(p);
+        auto valueText = [](const Property& p) { return (std::fabs(p.value - std::round(p.value)) < 1e-9 ? fmt(p.value, 0) : fmt(p.value, p.value < 100 ? 3 : 1)) + " " + p.unit; };
+        auto propColour = [](const Property& p) { return p.classification == "verified" ? T.authentic : p.classification == "inferred" ? T.warn : T.derived; };
+        if (!primary.empty())
         {
-            y -= 8;
-            text("MEASUREMENTS", insL + 18, y, T.ink3, 0, true);
-            y -= 18;
+            static const std::map<std::string, std::string> nice{ { "bore_d", "Bore d" }, { "outside_D", "Outside D" }, { "width_B", "Width B" },
+                                                                  { "envelope_x", "Length" }, { "envelope_y", "Width" }, { "envelope_z", "Height" } };
+            const S32 colW = innerW / (S32)primary.size();
+            S32 x = insL + 18;
+            for (auto* p : primary)
+            {
+                roundRect(x, y + 6, x + colW - 8, y - 38, 10, T.surfaceHi);
+                text(nice.count(p->name) ? nice.at(p->name) : p->name, x + 10, y - 10, T.ink3, 0);
+                text(valueText(*p), x + 10, y - 30, T.ink, 1, true);
+                dot((F32)(x + colW - 18), (F32)y - 6, 3, propColour(*p));
+                x += colW;
+            }
+            y -= 54;
+        }
+        // Material: only what the catalog states; never invented.
+        const Property* density = findProp("density");
+        text("Material", insL + 18, y, T.ink3, 0);
+        text(density ? "density " + valueText(*density) + (density->classification == "inferred" ? " (assumed)" : "") : "not specified in the catalog",
+             insL + 88, y, density ? T.ink : T.ink3, 0);
+        y -= 26;
+        // Key actions.
+        {
+            std::vector<std::pair<std::string, std::function<void()>>> acts;
+            const bool eng = c.domain == "engineering";
+            if (eng) acts.push_back({ "Frame", [e = eng ? m->engine.get() : nullptr] { if (e) e->post([e] { e->frameSelected(); }); } });
+            if (eng) acts.push_back({ "X-Ray", [e = m->engine.get()] { e->post([e] { e->setPresentation(e->presentation == "xray" ? "realistic" : "xray"); }); } });
+            if (eng) acts.push_back({ "Exploded", [e = m->engine.get()] { e->post([e] { e->setPresentation(e->presentation == "exploded" ? "realistic" : "exploded"); }); } });
+            acts.push_back({ "Ask AI", [e = m->engine.get(), q = "What is " + c.label + ", and how does it work?"] { e->post([e, q] { e->ask(q); }); } });
+            S32 bx = insL + 18;
+            for (auto& a : acts)
+            {
+                const S32 bw = width(a.first, 0, true) + 22;
+                if (bx + bw > insR - 14) break;
+                LLRect br(bx, y + 8, bx + bw, y - 18);
+                const std::string id = "ins-" + a.first;
+                roundRect(br.mLeft, br.mTop, br.mRight, br.mBottom, 12, &a == &acts.front() ? T.accentSoft : T.surfaceHi);
+                if (m->focused(id)) focusRing(br, 12);
+                text(a.first, bx + bw / 2, y - 9, T.ink, 0, true, LLFontGL::HCENTER);
+                m->hit(br, a.second, id);
+                bx += bw + 6;
+            }
+            y -= 34;
+        }
+        // Advanced sections (collapsed until opened).
+        auto section = [&](const std::string& key, const std::string& title, const std::string& summary, const std::function<S32(S32)>& body) {
+            if (y < insBottom + 24) return;
+            const bool open = m->openSections.count(key) > 0;
+            LLRect hr(insL + 10, y + 12, insR - 10, y - 8);
+            const std::string id = "sec-" + key;
+            if (m->focused(id)) focusRing(hr, 8);
+            gl_rect_2d(insL + 18, y + 14, insR - 18, y + 13, T.hairline, true);
+            icon(Icon::Chevron, (F32)insL + 24, (F32)y + 2, T.ink3, open ? .7f : .6f);
+            text(title, insL + 38, y - 2, T.ink2, 0, true);
+            text(clip(summary, insR - insL - 200, 0), insR - 18, y - 2, T.ink3, 0, false, LLFontGL::RIGHT);
+            m->hit(hr, [this, key] { if (!m->openSections.erase(key)) m->openSections.insert(key); }, id);
+            y -= 22;
+            if (open) y = body(y) - 4;
+        };
+        section("geometry", "Geometry & measurements", std::to_string(props.size()) + " values", [&](S32 yy) {
             for (auto& p : props)
             {
-                if (y < insBottom + 120) break;
-                text(p.name, insL + 18, y, T.ink2, 0);
-                const std::string val = (std::fabs(p.value - std::round(p.value)) < 1e-9 ? fmt(p.value, 0) : fmt(p.value, p.value < 100 ? 3 : 1)) + " " + p.unit;
-                text(val, insR - 30, y, p.classification == "inferred" ? T.warn : T.ink, 0, true, LLFontGL::RIGHT);
-                dot((F32)insR - 20, (F32)y + 4, 3, p.classification == "verified" ? T.authentic : p.classification == "inferred" ? T.warn : T.derived);
-                y -= 17;
+                if (yy < insBottom + 30) break;
+                text(p.name, insL + 30, yy, T.ink2, 0);
+                text(valueText(p), insR - 30, yy, p.classification == "inferred" ? T.warn : T.ink, 0, true, LLFontGL::RIGHT);
+                dot((F32)insR - 20, (F32)yy + 4, 3, propColour(p));
+                yy -= 17;
             }
-            text("● kernel-derived  ● design input  ● assumed", insL + 18, y - 2, T.ink3, 0);
+            text("● kernel-derived  ● design input  ● assumed", insL + 30, yy - 2, T.ink3, 0);
+            return yy - 18;
+        });
+        section("frames", "Coordinate frames", c.frames.empty() ? "none" : c.frames.front().id, [&](S32 yy) {
+            for (size_t i = 0; i < c.frames.size(); ++i)
+            {
+                if (yy < insBottom + 30) break;
+                const auto& f = c.frames[i];
+                text(std::string(i ? "↑ " : "") + clip(f.id, insR - insL - 150, 0, i == 0), insL + 30, yy, i == 0 ? T.ink : T.ink2, 0, i == 0);
+                text(f.cls + " · " + f.units, insR - 18, yy, T.ink3, 0, false, LLFontGL::RIGHT);
+                yy -= 15;
+                if (!f.transform.empty()) { text("   " + clip(f.transform, insR - insL - 60, 0), insL + 30, yy, f.transform.find("presentation") != std::string::npos || f.transform.find("demonstration") != std::string::npos ? T.warn : T.ink3, 0); yy -= 15; }
+            }
+            return yy;
+        });
+        section("reps", "Representations", std::to_string(c.reps.size()) + " of this entity", [&](S32 yy) {
+            for (auto& r : c.reps)
+            {
+                if (yy < insBottom + 30) break;
+                const bool cur = r.id == c.repId;
+                const LLColor4 col = !r.authorized ? T.ink3 : cur ? T.accent : T.ink2;
+                dot((F32)insL + 34, (F32)yy + 4, 3.5f, col);
+                text(r.kind, insL + 44, yy, col, 0, cur);
+                text(r.authorized ? r.units : "requires engineering scope", insR - 18, yy, r.authorized ? T.ink3 : T.warn, 0, false, LLFontGL::RIGHT);
+                if (r.authorized && !r.scene.empty() && !cur)
+                    m->hit(LLRect(insL + 20, yy + 12, insR - 10, yy - 6), [eng, e = c.entity, k = r.kind] { eng->post([eng, e, k] { eng->navigate(e, {}, true, k); }); }, "rep-" + r.id);
+                yy -= 18;
+            }
+            return yy;
+        });
+        section("provenance", "Provenance", c.sources.empty() ? "none recorded" : std::to_string(c.sources.size()) + " sources", [&](S32 yy) {
+            for (auto& src : c.sources) { if (yy < insBottom + 16) break; text(clip(src, insR - insL - 50, 0), insL + 30, yy, T.ink2, 0); yy -= 15; }
+            return yy;
+        });
+        section("validation", "Validation", classLabel(c.classification, c.demo), [&](S32 yy) {
+            text(classLabel(c.classification, c.demo), insL + 30, yy, classColour(c.classification, c.demo), 0, true);
+            yy -= 16;
+            for (auto& w : c.warnings) { if (yy < insBottom + 16) break; yy = wrapped(w, insL + 30, yy, insR - insL - 50, T.demo, 0, 2); }
+            if (c.warnings.empty()) { text("No validation warnings for this context.", insL + 30, yy, T.ink3, 0); yy -= 15; }
+            return yy;
+        });
+    }
+    else if (m->mode == Mode::Create && !v->creation.draftId.empty())
+    {
+        // Ω-XIX Create panel: the draft, its validation, objects, edits, history and publication.
+        const auto& cr = v->creation;
+        const S32 cl = insL - (compact ? 0 : 20), ct = insTop, cb = insBottom;
+        panel(cl, ct, insR, cb, 16.f, true);
+        S32 y = ct - 28;
+        icon(Icon::Plus, (F32)cl + 24, (F32)y + 4, T.violet, .8f);
+        text(cr.published ? "PUBLISHED" : "DRAFT", cl + 40, y, cr.published ? T.live : T.violet, 0, true);
+        text("revision " + std::to_string(cr.revision) + " · demonstration", insR - 18, y, T.ink3, 0, false, LLFontGL::RIGHT);
+        y -= 28;
+        text(clip(cr.name, insR - cl - 36, 2, true), cl + 18, y, T.ink, 2, true);
+        y -= 20;
+        y = wrapped(cr.summary, cl + 18, y, insR - cl - 36, T.ink2, 0, 2) - 2;
+        text(clip(cr.zone, insR - cl - 36, 0), cl + 18, y, T.ink3, 0);
+        y -= 22;
+        // Validation.
+        {
+            const std::string vl = cr.valid ? "VALID" : std::to_string(cr.findings.size()) + " PROBLEM" + (cr.findings.size() == 1 ? "" : "S");
+            const LLColor4 vc = cr.valid ? T.live : T.bad;
+            roundRect(cl + 18, y + 8, cl + 30 + width(vl, 0, true), y - 12, 9, alpha(vc, .18f));
+            text(vl, cl + 24, y - 6, vc, 0, true);
+            std::string checks;
+            for (auto& c2 : cr.checks) checks += (checks.empty() ? "" : "  ") + c2;
+            text(clip(checks, insR - cl - 80 - width(vl, 0, true), 0), cl + 40 + width(vl, 0, true), y - 6, T.ink3, 0);
+            y -= 22;
+            for (size_t i = 0; i < cr.findings.size() && i < 2; ++i) y = wrapped(cr.findings[i], cl + 18, y, insR - cl - 36, T.bad, 0, 2);
+        }
+        // Objects.
+        text("OBJECTS · " + std::to_string(cr.objects.size()), cl + 18, y - 4, T.ink3, 0, true);
+        y -= 22;
+        for (auto& o : cr.objects)
+        {
+            if (y < cb + 150) break;
+            const bool sel = o.id == cr.selected;
+            LLRect rc(cl + 10, y + 12, insR - 10, y - 8);
+            const std::string id = "obj-" + o.id;
+            if (sel) roundRect(rc.mLeft, rc.mTop, rc.mRight, rc.mBottom, 8, T.accentSoft);
+            if (m->focused(id)) focusRing(rc, 8);
+            text(clip(o.label, insR - cl - 170, 0, sel), cl + 22, y - 2, sel ? T.ink : T.ink2, 0, sel);
+            text(o.material + " · " + fmt(o.x, 1) + ", " + fmt(o.y, 1) + (o.rot != 0 ? " · " + fmt(o.rot, 0) + "°" : ""), insR - 18, y - 2, T.ink3, 0, false, LLFontGL::RIGHT);
+            if (!cr.published) m->hit(rc, [eng, oid = o.id] { eng->post([eng, oid] { eng->selectDraftObject(oid); }); }, id);
             y -= 20;
         }
-        // Frame chain.
-        y -= 4;
-        text("REFERENCE FRAMES", insL + 18, y, T.ink3, 0, true);
-        y -= 18;
-        for (size_t i = 0; i < c.frames.size(); ++i)
-        {
-            if (y < insBottom + 50) break;
-            const auto& f = c.frames[i];
-            text(std::string(i ? "↑ " : "") + clip(f.id, insR - insL - 140, 0, i == 0), insL + 18, y, i == 0 ? T.ink : T.ink2, 0, i == 0);
-            text(f.cls + " · " + f.units, insR - 18, y, T.ink3, 0, false, LLFontGL::RIGHT);
-            y -= 15;
-            if (!f.transform.empty()) { text("   " + f.transform, insL + 18, y, f.transform.find("presentation") != std::string::npos || f.transform.find("demonstration") != std::string::npos ? T.warn : T.ink3, 0); y -= 15; }
-        }
-        // Provenance.
-        if (y > insBottom + 40)
+        // Edit controls for the selected object.
+        if (!cr.published && !cr.selected.empty())
         {
             y -= 4;
-            text("PROVENANCE", insL + 18, y, T.ink3, 0, true);
-            y -= 16;
-            for (auto& s : c.sources) { if (y < insBottom + 16) break; text(clip(s, insR - insL - 36, 0), insL + 18, y, T.ink2, 0); y -= 15; }
+            std::vector<std::pair<std::string, std::function<void()>>> btn = {
+                { "←", [eng, o = cr.selected] { eng->post([eng, o] { eng->creationEdit("move", o, bj::array{ -.5, 0.0 }); }); } },
+                { "→", [eng, o = cr.selected] { eng->post([eng, o] { eng->creationEdit("move", o, bj::array{ .5, 0.0 }); }); } },
+                { "↑", [eng, o = cr.selected] { eng->post([eng, o] { eng->creationEdit("move", o, bj::array{ 0.0, .5 }); }); } },
+                { "↓", [eng, o = cr.selected] { eng->post([eng, o] { eng->creationEdit("move", o, bj::array{ 0.0, -.5 }); }); } },
+                { "⟲ 15°", [eng, o = cr.selected] { eng->post([eng, o] { eng->creationEdit("rotate", o, 15.0); }); } },
+                { "Material", [eng, o = cr.selected] { eng->post([eng, o] { eng->creationEdit("material", o, nullptr); }); } },
+                { "Remove", [eng, o = cr.selected] { eng->post([eng, o] { eng->creationEdit("remove", o, nullptr); }); } } };
+            S32 bx = cl + 18;
+            for (auto& b : btn)
+            {
+                const S32 bw = width(b.first, 0, true) + 18;
+                if (bx + bw > insR - 12) { bx = cl + 18; y -= 30; }
+                LLRect br(bx, y + 8, bx + bw, y - 16);
+                const std::string id = "edit-" + b.first;
+                roundRect(br.mLeft, br.mTop, br.mRight, br.mBottom, 10, T.surfaceHi);
+                if (m->focused(id)) focusRing(br, 10);
+                text(b.first, bx + bw / 2, y - 7, T.ink, 0, true, LLFontGL::HCENTER);
+                m->hit(br, b.second, id);
+                bx += bw + 5;
+            }
+            y -= 32;
         }
+        // History + publish.
+        {
+            std::vector<std::tuple<std::string, bool, std::function<void()>>> btn;
+            if (!cr.published)
+            {
+                btn.push_back({ "Undo", cr.histCursor > 0, [eng] { eng->post([eng] { eng->creationHistory(false); }); } });
+                btn.push_back({ "Redo", cr.histCursor + 1 < cr.histSize, [eng] { eng->post([eng] { eng->creationHistory(true); }); } });
+                btn.push_back({ "Publish…", cr.valid && cr.pubStage != "publishing", [this] { m->confirmPublish = true; } });
+            }
+            S32 bx = cl + 18;
+            for (auto& [label, enabled, f] : btn)
+            {
+                const S32 bw = width(label, 0, true) + 24;
+                LLRect br(bx, y + 8, bx + bw, y - 18);
+                const std::string id = "cr-" + label;
+                const bool primary = label == "Publish…";
+                roundRect(br.mLeft, br.mTop, br.mRight, br.mBottom, 12, !enabled ? alpha(T.surfaceHi, .4f) : primary ? T.accent : T.surfaceHi);
+                if (m->focused(id)) focusRing(br, 12);
+                text(label, bx + bw / 2, y - 8, !enabled ? T.ink3 : primary ? T.bg : T.ink, 0, true, LLFontGL::HCENTER);
+                if (enabled) m->hit(br, f, id);
+                bx += bw + 6;
+            }
+            y -= 34;
+        }
+        // Publication progress / receipt.
+        if (!cr.pubStage.empty())
+        {
+            const LLColor4 pc = cr.pubStage == "published" ? T.live : cr.pubStage == "refused" ? T.bad : T.accent;
+            static const char* names[] = { "verify", "package", "spatialdb", "mutsea" };
+            static const char* labels[] = { "Verify approved revision", "Package (Forge, immutable)", "SpatialDB catalog edition", "MutSea owner commit · WorldLine" };
+            for (int i = 0; i < 4 && y > cb + 30; ++i)
+            {
+                const bool reached = std::find(cr.pubSteps.begin(), cr.pubSteps.end(), names[i]) != cr.pubSteps.end();
+                const bool current = reached && cr.pubStage == "publishing" && cr.pubSteps.back() == names[i];
+                const bool ok = reached && !current && cr.pubStage != "refused";
+                text(ok || cr.pubStage == "published" ? "✓" : current ? "…" : "○", cl + 22, y, ok || cr.pubStage == "published" ? T.live : current ? T.accent : T.ink3, 0, true);
+                text(labels[i], cl + 40, y, reached ? T.ink2 : T.ink3, 0);
+                y -= 18;
+            }
+            y = wrapped(cr.pubStage == "published" ? "Published · " + cr.receipt : cr.pubMessage, cl + 18, y - 2, insR - cl - 36, pc, 0, 2);
+        }
+        if (!cr.edits.empty() && y > cb + 34) text(clip("Last edit: " + cr.edits.back(), insR - cl - 36, 0), cl + 18, cb + 14, T.ink3, 0);
+        else text("Arrows move · [ ] rotate · M material · Ctrl+Z undo", cl + 18, cb + 14, T.ink3, 0);
     }
     else if ((m->mode == Mode::Explore || m->mode == Mode::Create) && !v->selected.empty() && !compact)
     {
@@ -2190,42 +2713,138 @@ void LLFloaterFinalverseShell::draw()
                 else m->hit(rc, [eng, q = ch.first] { eng->post([eng, q] { eng->ask(q); }); }, id);
                 cx += cw + 8;
             }
-        // AI card.
+        // Ω-XIX creation task card: what the World Director did, stage by stage (no model reasoning).
+        const auto& cr = v->creation;
+        static double creationShownAt = -100;
+        static std::string creationKey;
+        if (cr.stage == "preview_ready" && creationKey != cr.draftId + std::to_string(cr.revision)) { creationKey = cr.draftId + std::to_string(cr.revision); creationShownAt = t; }
+        const bool creationCard = cr.stage == "working" || cr.stage == "refused" || (cr.stage == "preview_ready" && cr.revision == 1 && t - creationShownAt < 12.0);
+        if (creationCard && (v->ai.stage.empty() || v->ai.stage == "done" || v->ai.stage == "cancelled"))
+        {
+            const bool working = cr.stage == "working", refused = cr.stage == "refused";
+            struct St { std::string label; int state; };
+            std::vector<St> steps;
+            const int done = working ? 0 : refused ? 0 : 2;
+            steps.push_back({ "Understand the request (" + (cr.model.empty() ? std::string("local model") : cr.model) + ")", working ? 1 : refused ? 3 : 2 });
+            steps.push_back({ "Resolve the place through the spatial service (FVP)", done });
+            steps.push_back({ "Typed creation plan · " + (cr.objects.empty() ? std::string("library assets only") : std::to_string(cr.objects.size()) + " objects"), done });
+            steps.push_back({ "Asset discovery · demonstration library + Forge CAD", done });
+            steps.push_back({ "Scene assembly · deterministic layout, draft world definition", done });
+            steps.push_back({ "Validation · zone, clearance, egress, Core FWD, Forge", working || refused ? 0 : (cr.valid ? 2 : 3) });
+            steps.push_back({ "Preview in the Viewer (draft, not published)", done });
+            const bool panelShown = m->mode == Mode::Create && !cr.draftId.empty();
+            const S32 cl2 = panelShown ? std::max(20, insL - 40 - (barR - barL)) : barL, cr2 = panelShown ? insL - 40 : barR, cb2 = chipY + 22;
+            const S32 ct2 = cb2 + 96 + (S32)steps.size() * 19 + 34;
+            panel(cl2, ct2, cr2, cb2, 16.f, true);
+            const LLColor4 sc = refused ? T.bad : working ? T.violet : cr.valid ? T.live : T.warn;
+            const std::string st = working ? "CREATING" : refused ? "NOT POSSIBLE" : cr.valid ? "DRAFT READY" : "DRAFT NEEDS FIXES";
+            roundRect(cl2 + 16, ct2 - 12, cl2 + 28 + width(st, 0, true), ct2 - 32, 9, alpha(sc, .18f));
+            text(st, cl2 + 22, ct2 - 26, sc, 0, true);
+            text(clip(cr.request, cr2 - cl2 - 220, 0, true), cl2 + 40 + width(st, 0, true), ct2 - 26, T.ink, 0, true);
+            int ndone = 0;
+            for (auto& x : steps) ndone += x.state == 2;
+            roundRect(cl2 + 18, ct2 - 44, cr2 - 18, ct2 - 48, 2, T.hairline);
+            if (ndone) roundRect(cl2 + 18, ct2 - 44, cl2 + 18 + (S32)((cr2 - cl2 - 36) * ndone / (float)steps.size()), ct2 - 48, 2, sc);
+            S32 y = ct2 - 70;
+            for (auto& x : steps)
+            {
+                const LLColor4 col = x.state == 2 ? T.live : x.state == 1 ? T.violet : x.state == 3 ? T.bad : T.ink3;
+                if (x.state == 1 && !eng->reducedMotion)
+                {
+                    gGL.pushMatrix();
+                    gGL.translatef((F32)cl2 + 26, (F32)y + 5, 0);
+                    gl_washer_segment_2d(6, 4.f, (F32)(t * 5), (F32)(t * 5 + 4.4), 14, col, alpha(col, 0));
+                    gGL.popMatrix();
+                }
+                else text(x.state == 2 ? "✓" : x.state == 3 ? "✕" : "○", cl2 + 21, y, col, 0, true);
+                text(clip(x.label, cr2 - cl2 - 70, 0), cl2 + 40, y, x.state == 0 ? T.ink3 : T.ink2, 0, x.state == 1);
+                y -= 19;
+            }
+            wrapped(cr.message, cl2 + 18, y - 4, cr2 - cl2 - 36, refused ? T.bad : T.ink2, 0, 2);
+            text("Creates a draft only · publishing needs your approval", cl2 + 18, cb2 + 10, T.ink3, 0);
+            if (!working) text(fmt(cr.seconds, 1) + " s" + (cr.planSeconds > 0 ? " · plan " + fmt(cr.planSeconds, 1) + " s" : ""), cr2 - 18, cb2 + 10, T.ink3, 0, false, LLFontGL::RIGHT);
+        }
+        // Ω-XIX AI task panel: intent, typed plan, step-by-step execution with progress, result,
+        // errors and approvals; cancel and retry. Shows concise action traces, never model reasoning.
         const AiCard& ai = v->ai;
         static std::string finishedId;
         static double finishedAt = 0;
-        if ((ai.stage == "done" || ai.stage == "refused") && finishedId != ai.id + ai.stage) { finishedId = ai.id + ai.stage; finishedAt = t; }
-        const bool expired = (ai.stage == "done" || ai.stage == "refused") && t - finishedAt > 14.0;
+        const bool terminal = ai.stage == "done" || ai.stage == "refused" || ai.stage == "cancelled";
+        if (terminal && finishedId != ai.id + ai.stage) { finishedId = ai.id + ai.stage; finishedAt = t; }
+        const bool expired = terminal && t - finishedAt > 20.0;
         if (!ai.stage.empty() && !expired)
         {
-            const S32 cl2 = barL, cr2 = barR, cb2 = chipY + 22;
-            S32 lines = 2 + (S32)std::min<size_t>(ai.plan.size(), 4) + (ai.routeLabels.empty() ? 0 : 1) + (S32)std::min<size_t>(ai.missing.size(), 2);
-            const S32 ct2 = cb2 + 52 + lines * 17;
+            struct Step { std::string label; int state; };  // 0 pending, 1 running, 2 done, 3 failed
+            std::vector<Step> steps;
+            const bool planned = ai.stage == "ready" || ai.stage == "executing" || ai.stage == "done" || !ai.route.empty() || (ai.stage == "refused" && !ai.plan.empty());
+            const bool failed = ai.stage == "refused", cancelled = ai.stage == "cancelled";
+            steps.push_back({ "Understand the request (" + (ai.model.empty() ? std::string("local model") : ai.model) + ")", planned ? 2 : (cancelled ? 3 : 1) });
+            steps.push_back({ "Validate the typed plan against the spatial service", planned ? (failed && ai.route.empty() ? 3 : 2) : 0 });
+            for (size_t i = 0; i < ai.routeLabels.size(); ++i)
+            {
+                int st = 0;
+                if (ai.stage == "done") st = 2;
+                else if (ai.stage == "executing") st = i + 1 < ai.executing ? 2 : i + 1 == ai.executing ? 1 : 0;
+                else if (failed || cancelled) st = i + 1 < ai.executing ? 2 : i + 1 == ai.executing ? 3 : 0;
+                steps.push_back({ "Navigate → " + ai.routeLabels[i] + "  (SPATIAL.NAVIGATE)", st });
+            }
+            int doneSteps = 0;
+            for (auto& st : steps) doneSteps += st.state == 2;
+            const S32 shown = (S32)std::min<size_t>(steps.size(), 7);
+            const S32 cl2 = barL, cr2 = barR, cb2 = chipY + 22 + (c.domain == "engineering" && m->mode != Mode::Develop ? 56 : 0);
+            const S32 msgLines = ai.message.empty() ? 0 : 2;
+            const S32 ct2 = cb2 + 96 + shown * 19 + msgLines * 17 + (S32)std::min<size_t>(ai.missing.size(), 2) * 17;
             panel(cl2, ct2, cr2, cb2, 16.f, true);
-            const LLColor4 sc = ai.stage == "refused" ? T.bad : ai.stage == "done" ? T.live : T.accent;
-            const std::string st = ai.stage == "planning" ? "PLANNING" : ai.stage == "executing" ? "EXECUTING " + std::to_string(ai.executing) + "/" + std::to_string(ai.route.size()) : ai.stage == "done" ? "DONE" : ai.stage == "ready" ? "READY" : "NOT POSSIBLE";
+            const LLColor4 sc = failed ? T.bad : cancelled ? T.warn : ai.stage == "done" ? T.live : T.accent;
+            const std::string st = ai.stage == "planning" ? "PLANNING" : ai.stage == "executing" ? "RUNNING" : ai.stage == "done" ? "DONE" : ai.stage == "ready" ? "READY" : cancelled ? "CANCELLED" : "NOT POSSIBLE";
             roundRect(cl2 + 16, ct2 - 12, cl2 + 28 + width(st, 0, true), ct2 - 32, 9, alpha(sc, .18f));
             text(st, cl2 + 22, ct2 - 26, sc, 0, true);
-            text(clip(ai.query, cr2 - cl2 - 160, 0, true), cl2 + 40 + width(st, 0, true), ct2 - 26, T.ink, 0, true);
-            if (ai.stage == "planning" && !eng->reducedMotion)
+            text(clip(ai.query, cr2 - cl2 - 260, 0, true), cl2 + 40 + width(st, 0, true), ct2 - 26, T.ink, 0, true);
+            // Cancel / retry / dismiss.
             {
-                gGL.pushMatrix();
-                gGL.translatef((F32)cr2 - 26, (F32)ct2 - 22, 0);
-                gl_washer_segment_2d(8, 5.5f, (F32)(t * 5), (F32)(t * 5 + 4.4), 18, T.accent, alpha(T.accent, 0));
-                gGL.popMatrix();
+                std::vector<std::pair<std::string, std::function<void()>>> btn;
+                if (ai.stage == "planning" || ai.stage == "executing") btn.push_back({ "Cancel", [eng] { eng->aiCancel = true; } });
+                if (failed || cancelled || ai.stage == "done") btn.push_back({ "Retry", [eng] { eng->post([eng] { eng->ask(eng->lastAsk); }); } });
+                if (terminal) btn.push_back({ "Dismiss", [] { finishedAt = -100; } });
+                S32 bx = cr2 - 16;
+                for (auto it = btn.rbegin(); it != btn.rend(); ++it)
+                {
+                    const S32 bw = width(it->first, 0, true) + 20;
+                    LLRect br(bx - bw, ct2 - 10, bx, ct2 - 34);
+                    const std::string id = "ai-" + it->first;
+                    roundRect(br.mLeft, br.mTop, br.mRight, br.mBottom, 12, it->first == "Cancel" ? alpha(T.bad, .18f) : T.surfaceHi);
+                    if (m->focused(id)) focusRing(br, 12);
+                    text(it->first, bx - bw / 2, ct2 - 27, T.ink, 0, true, LLFontGL::HCENTER);
+                    m->hit(br, it->second, id);
+                    bx -= bw + 6;
+                }
             }
-            S32 y = ct2 - 48;
-            y = wrapped(ai.message, cl2 + 18, y, cr2 - cl2 - 36, T.ink2, 0, 2);
-            for (size_t i = 0; i < ai.plan.size() && i < 4; ++i) { text(clip("· " + ai.plan[i], cr2 - cl2 - 36, 0), cl2 + 18, y, T.ink3, 0); y -= 17; }
-            if (!ai.routeLabels.empty())
+            // Progress.
+            const float frac = steps.empty() ? 0.f : (float)doneSteps / steps.size();
+            roundRect(cl2 + 18, ct2 - 44, cr2 - 18, ct2 - 48, 2, T.hairline);
+            if (frac > 0) roundRect(cl2 + 18, ct2 - 44, cl2 + 18 + (S32)((cr2 - cl2 - 36) * frac), ct2 - 48, 2, sc);
+            S32 y = ct2 - 70;
+            for (S32 i = 0; i < shown; ++i)
             {
-                std::string route;
-                for (size_t i = 0; i < ai.routeLabels.size(); ++i) route += (i ? " › " : "") + ai.routeLabels[i];
-                text(clip(route, cr2 - cl2 - 36, 0), cl2 + 18, y, T.accent, 0);
-                y -= 17;
+                const auto& s2 = steps[i];
+                const LLColor4 col = s2.state == 2 ? T.live : s2.state == 1 ? T.accent : s2.state == 3 ? T.bad : T.ink3;
+                if (s2.state == 1 && !eng->reducedMotion)
+                {
+                    gGL.pushMatrix();
+                    gGL.translatef((F32)cl2 + 26, (F32)y + 5, 0);
+                    gl_washer_segment_2d(6, 4.f, (F32)(t * 5), (F32)(t * 5 + 4.4), 14, col, alpha(col, 0));
+                    gGL.popMatrix();
+                }
+                else text(s2.state == 2 ? "✓" : s2.state == 3 ? "✕" : "○", cl2 + 21, y, col, 0, true);
+                text(clip(s2.label, cr2 - cl2 - 70, 0), cl2 + 40, y, s2.state == 0 ? T.ink3 : T.ink2, 0, s2.state == 1);
+                y -= 19;
             }
+            y -= 4;
+            if (!ai.message.empty()) y = wrapped(ai.message, cl2 + 18, y, cr2 - cl2 - 36, failed ? T.bad : T.ink2, 0, 2);
             for (size_t i = 0; i < ai.missing.size() && i < 2; ++i) { text(clip("Missing: " + ai.missing[i], cr2 - cl2 - 36, 0), cl2 + 18, y, T.warn, 0); y -= 17; }
-            if (!ai.model.empty()) text(ai.model + " · " + fmt(ai.planSeconds, 1) + " s · " + ai.policy, cr2 - 18, cb2 + 10, T.ink3, 0, false, LLFontGL::RIGHT);
+            const std::string foot = "Navigation only · no world changes · no approval needed";
+            text(foot, cl2 + 18, cb2 + 10, T.ink3, 0);
+            if (!ai.model.empty()) text(clip(ai.model + " · " + fmt(ai.planSeconds, 1) + " s", cr2 - cl2 - width(foot, 0) - 60, 0), cr2 - 18, cb2 + 10, T.ink3, 0, false, LLFontGL::RIGHT);
         }
     }
 
@@ -2280,15 +2899,140 @@ void LLFloaterFinalverseShell::draw()
     // ================================================================ shortcuts help
     if (m->showHelp)
     {
-        static const char* rows[][2] = { { "1 – 4", "Explore · Create · Analyze · Develop" }, { "/  or  Ctrl+K", "Ask FINALVERSE" }, { "Tab / Shift+Tab", "Move focus" },
+        static const char* rows[][2] = { { "1 – 4", "Explore · Create · Analyze · Develop" }, { "Ctrl+K", "Command palette (places, actions, AI)" }, { "/", "Ask FINALVERSE" }, { "F · V · Shift-drag", "Frame selection · presentation · pan" }, { "Tab / Shift+Tab", "Move focus" },
                                           { "Enter", "Activate focused item (twice on a place: enter it)" }, { "Alt+← / Alt+→  ·  Backspace", "Back / forward" },
                                           { "H", "Home (Montréal)" }, { "Arrows · drag · wheel", "Orbit and zoom (presentation only)" }, { "R  ·  O", "Reset camera · orbit" },
                                           { "Ctrl + / Ctrl −", "Text size" }, { "Esc", "Clear selection" } };
-        const S32 w = 560, h = 60 + 10 * 22, l = (W - w) / 2, tt = (H + h) / 2;
+        const S32 w = 600, h = 60 + 12 * 22, l = (W - w) / 2, tt = (H + h) / 2;
         panel(l, tt, l + w, tt - h, 18.f, true);
         text("Keyboard", l + 24, tt - 32, T.ink, 1, true);
         S32 y = tt - 60;
         for (auto& r : rows) { text(r[0], l + 24, y, T.accent, 0, true); text(r[1], l + 230, y, T.ink2, 0); y -= 22; }
+    }
+
+    // ================================================================ Ω-XIX draft banner + publish confirmation
+    if (v->creation.previewActive && eng)
+    {
+        const std::string b = "DRAFT PREVIEW · " + v->creation.name + " · not published · demonstration";
+        const S32 bw = width(b, 0, true) + 40, bl = (W - bw) / 2, bt = crumbY - 24;
+        roundRect(bl, bt, bl + bw, bt - 26, 13, alpha(T.violet, .22f));
+        text(b, W / 2, bt - 18, T.violet, 0, true, LLFontGL::HCENTER);
+    }
+    if (m->confirmPublish && eng)
+    {
+        const auto& cr = v->creation;
+        gl_rect_2d(0, H, W, 0, alpha(T.bg, .55f), true);
+        const S32 w = 620, h = 330, l = (W - w) / 2, tt = (H + h) / 2;
+        panel(l, tt, l + w, tt - h, 18.f, true);
+        text("Publish to the live world?", l + 26, tt - 40, T.ink, 2, true);
+        S32 y = tt - 70;
+        if (!cr.valid)
+            y = wrapped("Revision " + std::to_string(cr.revision) + " has validation problems (" + (cr.findings.empty() ? std::string("see the panel") : cr.findings.front()) + "). Fix or undo first; it cannot be published.", l + 26, y, w - 52, T.bad, 0, 3);
+        else
+            y = wrapped("'" + cr.name + "' (revision " + std::to_string(cr.revision) + ", " + std::to_string(cr.objects.size()) + " objects) passed validation. Approving it will:", l + 26, y, w - 52, T.ink2, 0, 2);
+        static const char* what[] = { "Package the validated world definition immutably (Forge receipt checked)",
+                                      "Publish a new SpatialDB catalog edition: the hall shows the lab; a new demonstration entity",
+                                      "Create one MutSea world entity with your owner authority, pinned to that publication",
+                                      "Record the change in MutSea's hash-chained WorldLine" };
+        for (auto* x : what) { text("•", l + 30, y, T.accent, 0, true); text(x, l + 46, y, T.ink2, 0); y -= 20; }
+        y -= 6;
+        text("The AI proposed this draft; only your approval publishes it. Demonstration placement, not surveyed.", l + 26, y, T.ink3, 0);
+        const S32 by = tt - h + 34;
+        LLRect cancel(l + w - 330, by + 14, l + w - 220, by - 14), ok(l + w - 210, by + 14, l + w - 26, by - 14);
+        roundRect(cancel.mLeft, cancel.mTop, cancel.mRight, cancel.mBottom, 13, T.surfaceHi);
+        text("Cancel", (cancel.mLeft + cancel.mRight) / 2, by - 5, T.ink, 0, true, LLFontGL::HCENTER);
+        roundRect(ok.mLeft, ok.mTop, ok.mRight, ok.mBottom, 13, cr.valid ? T.accent : alpha(T.surfaceHi, .5f));
+        text("Approve & publish", (ok.mLeft + ok.mRight) / 2, by - 5, cr.valid ? T.bg : T.ink3, 0, true, LLFontGL::HCENTER);
+        m->hits.clear();  // modal: only the dialog is clickable
+        m->hit(cancel, [this] { m->confirmPublish = false; }, "modal-cancel");
+        if (cr.valid) m->hit(ok, [this, eng] { m->confirmPublish = false; eng->post([eng] { eng->publishApproved(); }); }, "modal-approve");
+        text("Enter approves · Esc cancels", l + 26, by - 5, T.ink3, 0);
+    }
+
+    // ================================================================ Ω-XIX command palette
+    if (m->paletteOpen && eng)
+    {
+        auto lower = [](std::string x) { for (auto& ch : x) ch = (char)std::tolower((unsigned char)ch); return x; };
+        const std::string q = lower(m->paletteQuery);
+        auto match = [&](const std::string& label) { return q.empty() || lower(label).find(q) != std::string::npos; };
+        std::vector<Impl::PaletteItem> items;
+        // Places and entities: live search (scope-filtered by the spatial service) or what is here.
+        if (q.size() >= 2 && v->searchQuery == m->paletteQuery)
+            for (auto& f : v->found)
+                items.push_back({ "Go to", f.label, kindTitle(f.kind) + " · " + f.domain, true, [eng, e = f.entity] { eng->post([eng, e] { eng->navigate(e); }); } });
+        for (auto& ch : c.children)
+            if (match(ch.label)) items.push_back({ "Here", (ch.kind == "building" ? "Enter " : "Open ") + ch.label, kindTitle(ch.kind) + (ch.demo ? " · demonstration" : ""), true,
+                                                   [eng, e = ch.entity] { eng->post([eng, e] { eng->navigate(e); }); } });
+        // Recent locations (navigation history, newest first).
+        for (size_t i = v->history.size(); i-- > 0;)
+            if (i < v->historyEntities.size() && !v->historyEntities[i].empty() && v->historyEntities[i] != c.entity && match(v->history[i]))
+            {
+                bool dup = false;
+                for (auto& it : items) dup = dup || it.label == v->history[i];
+                if (!dup && items.size() < 40) items.push_back({ "Recent", v->history[i], "history", true, [eng, e = v->historyEntities[i]] { eng->post([eng, e] { eng->navigate(e); }); } });
+            }
+        // Saved views.
+        for (auto& sv : m->savedViews)
+            if (match(sv.label)) items.push_back({ "Saved views", sv.label, sv.presentation, true, [eng, sv] { eng->post([eng, sv] { eng->navigate(sv.entity); eng->setPresentation(sv.presentation); }); } });
+        // Representations of this entity (permission-aware: withheld ones are shown, disabled, with the reason).
+        for (auto& r : c.reps)
+            if (r.id != c.repId && match("open " + r.kind))
+                items.push_back({ "Representations", "Open " + r.kind, r.authorized ? r.units : "requires engineering scope", r.authorized && !r.scene.empty(),
+                                  [eng, e = c.entity, k = r.kind] { eng->post([eng, e, k] { eng->navigate(e, {}, true, k); }); } });
+        // Actions and tools (context-aware).
+        auto act = [&](const std::string& label, const std::string& detail, std::function<void()> f, bool enabled = true) {
+            if (match(label)) items.push_back({ "Actions", label, detail, enabled, std::move(f) });
+        };
+        for (int i = 0; i < 4; ++i) act(std::string("Switch to ") + modeName((Mode)i), std::to_string(i + 1), [this, i] { m->mode = (Mode)i; });
+        if (c.domain == "engineering")
+        {
+            static const std::pair<const char*, const char*> presets[] = { { "realistic", "Realistic" }, { "technical", "Technical" }, { "inspection", "Inspection" }, { "xray", "X-Ray" }, { "exploded", "Exploded" } };
+            for (auto& p : presets) act(std::string("Presentation: ") + p.second, "display only", [eng, k = std::string(p.first)] { eng->post([eng, k] { eng->setPresentation(k); }); });
+            act("Frame selection", "F", [eng] { eng->post([eng] { eng->frameSelected(); }); }, !v->selected.empty());
+        }
+        act("Reset camera", "R", [eng] { eng->post([eng] { eng->resetCamera(); }); });
+        act("Toggle orbit", "O", [eng] { eng->post([eng] { eng->orbit = !eng->orbit; eng->camera(0, 0, 1.0); }); });
+        act("Save this view", c.label, [this, v] { m->savedViews.push_back({ v->ctx.label + (v->presentation != "realistic" ? " · " + v->presentation : ""), v->ctx.entity, v->presentation }); });
+        act("Go home (Montréal)", "H", [eng] { eng->post([eng] { eng->navigate(eng->startEntity); }); });
+        act("Larger text", "Ctrl +", [] { gScale = llmin(gScale + 1, 2); });
+        act("Keyboard shortcuts", "?", [this] { m->showHelp = true; });
+        // AI instruction (always offered for free text).
+        if (!m->paletteQuery.empty())
+            items.push_back({ "AI", "Ask FINALVERSE: " + m->paletteQuery, "typed plan · validated before anything runs", true, [eng, qq = m->paletteQuery] { eng->post([eng, qq] { eng->ask(qq); }); } });
+        m->paletteItems = items;
+        if (m->paletteSel >= (int)items.size()) m->paletteSel = std::max(0, (int)items.size() - 1);
+        // Draw.
+        const S32 pw = llclamp(W - 200, 520, 720), pl = (W - pw) / 2, ptop = H - 150;
+        const S32 rows = (S32)std::min<size_t>(items.size(), 11);
+        std::set<std::string> groups;
+        for (S32 i = 0; i < rows; ++i) groups.insert(items[i].group);
+        const S32 ph = 70 + rows * 30 + (S32)groups.size() * 22 + 30;
+        gl_rect_2d(0, H, W, 0, alpha(T.bg, .45f), true);
+        panel(pl, ptop, pl + pw, ptop - ph, 18.f, true);
+        icon(Icon::Search, (F32)pl + 28, (F32)ptop - 33, T.accent, .9f);
+        if (m->paletteQuery.empty()) text("Go to a place, run an action, or ask FINALVERSE…", pl + 50, ptop - 40, T.ink3, 1);
+        else
+        {
+            const S32 tx = text(m->paletteQuery, pl + 50, ptop - 40, T.ink, 1);
+            if (std::fmod(t, 1.0) < .55) gl_rect_2d(tx + 2, ptop - 22, tx + 4, ptop - 44, T.accent, true);
+        }
+        text("Ctrl K", pl + pw - 22, ptop - 38, T.ink3, 0, false, LLFontGL::RIGHT);
+        gl_rect_2d(pl + 16, ptop - 58, pl + pw - 16, ptop - 59, T.hairline, true);
+        S32 y = ptop - 66;
+        std::string lastGroup;
+        for (S32 i = 0; i < rows; ++i)
+        {
+            const auto& it = items[i];
+            if (it.group != lastGroup) { y -= 6; text(it.group, pl + 22, y - 12, T.ink3, 0, true); y -= 22; lastGroup = it.group; }
+            LLRect rc(pl + 10, y, pl + pw - 10, y - 28);
+            if (i == m->paletteSel) roundRect(rc.mLeft, rc.mTop, rc.mRight, rc.mBottom, 10, it.enabled ? T.accentSoft : alpha(T.ink3, .12f));
+            text(clip(it.label, pw - 260, 1, i == m->paletteSel), pl + 24, y - 20, it.enabled ? T.ink : T.ink3, 1, i == m->paletteSel);
+            text(clip(it.detail, 210, 0), pl + pw - 24, y - 19, it.enabled ? T.ink3 : T.warn, 0, false, LLFontGL::RIGHT);
+            if (it.enabled) m->hit(rc, [this, run = it.run] { m->closePalette(); run(); }, "pal-" + std::to_string(i));
+            y -= 30;
+        }
+        if (items.empty()) text("No matches. Press Enter to ask FINALVERSE.", pl + 24, y - 20, T.ink3, 1);
+        text("↑↓ select · Enter run · Esc close · results are filtered by your access", pl + 22, ptop - ph + 14, T.ink3, 0);
     }
 
     // ---- scripted UI (same code paths as the controls; for reproducible evidence). Runs after
@@ -2319,6 +3063,34 @@ void LLFloaterFinalverseShell::draw()
         else if (cmd == "orbit") eng->post([eng] { eng->orbit = !eng->orbit; eng->camera(0, 0, 1.0); });
         else if (cmd == "zoom") eng->post([eng, z = std::atof(arg.c_str())] { eng->camera(0, 0, z); });
         else if (cmd == "preset") eng->post([eng, arg] { eng->setPresentation(arg); });
+        else if (cmd == "palette") { if (arg == "open") m->openPalette(); else m->closePalette(); }
+        else if (cmd == "palettetype") { for (llwchar ch : utf8str_to_wstring(arg)) handleUnicodeCharHere(ch); }
+        else if (cmd == "palettekey") { handleKeyHere(arg == "DOWN" ? KEY_DOWN : arg == "UP" ? KEY_UP : arg == "ESC" ? KEY_ESCAPE : KEY_RETURN, MASK_NONE); }
+        else if (cmd == "section") { if (!m->openSections.erase(arg)) m->openSections.insert(arg); }
+        else if (cmd == "cancelai") eng->aiCancel = true;
+        else if (cmd == "create") eng->post([eng, arg] { eng->create(arg); });
+        else if (cmd == "draftselect") eng->post([eng, arg] { eng->selectDraftObject(arg); });
+        else if (cmd == "draftedit")
+        {
+            std::istringstream is(arg);
+            std::string op, obj;
+            is >> op >> obj;
+            if (op == "move") { double dx = 0, dy = 0; is >> dx >> dy; eng->post([eng, obj, dx, dy] { eng->creationEdit("move", obj, bj::array{ dx, dy }); }); }
+            else if (op == "rotate") { double d = 0; is >> d; eng->post([eng, obj, d] { eng->creationEdit("rotate", obj, d); }); }
+            else if (op == "material") { std::string mm; is >> mm; eng->post([eng, obj, mm] { eng->creationEdit("material", obj, mm.empty() ? bj::value(nullptr) : bj::value(mm)); }); }
+            else eng->post([eng, op, obj] { eng->creationEdit(op, obj, nullptr); });
+        }
+        else if (cmd == "undo") eng->post([eng] { eng->creationHistory(false); });
+        else if (cmd == "redo") eng->post([eng] { eng->creationHistory(true); });
+        else if (cmd == "publishdialog") m->confirmPublish = true;
+        else if (cmd == "approve") { if (m->confirmPublish) { m->confirmPublish = false; eng->post([eng] { eng->publishApproved(); }); } }
+        else if (cmd == "window")
+        {
+            S32 ww = 0, hh = 0;
+            std::istringstream(arg) >> ww >> hh;
+            if (ww > 400 && hh > 300 && gViewerWindow && gViewerWindow->getWindow()) gViewerWindow->getWindow()->setSize(LLCoordScreen(ww, hh));
+            LL_INFOS("FinalverseShell") << "UITEST window " << ww << "x" << hh << LL_ENDL;
+        }
         else if (cmd == "frame") eng->post([eng] { eng->frameSelected(); });
         else if (cmd == "pan") eng->post([eng, arg] { double dx = 0, dy = 0; std::istringstream(arg) >> dx >> dy; eng->panView(dx, dy); });
         else if (cmd == "pitch") eng->post([eng, z = std::atof(arg.c_str())] { eng->camera(0, z, 1.0); });
