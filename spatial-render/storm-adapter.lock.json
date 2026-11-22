@@ -1,0 +1,73 @@
+{
+  "schema": "finalverse.storm-viewer-adapter-lock/1",
+  "repository": "https://github.com/finalverse/storm.git",
+  "accepted_main": "d611f7fbf95262dad88140460745e9faf1560e85",
+  "api": "Storm scene contexts + engineering frames (\u03a9-XVIII local candidate)",
+  "frozen_source_commit": "46ee2fae5446d633f5c26fa6fecd18acc0f984ea",
+  "source_status": "local \u03a9-XVIII candidate on feat/omega-xviii-cross-scale-20261122; not an accepted Storm release",
+  "files": [
+    {
+      "path": "include/storm/render/renderer.h",
+      "sha256": "b3802ac590b9597f17d1afce36c198eef5b11f332b502169069a20788120a4c5"
+    },
+    {
+      "path": "src/render/renderer.cpp",
+      "sha256": "85884268586d3aa09d77d5cfc658b50fd6154adb158984fdb63636465b699e24"
+    },
+    {
+      "path": "include/storm/fwd_scene.h",
+      "sha256": "ace8db26d458f443951739e62755a9226013afcc7fe1cfa9c0abc34d316a1d5d"
+    },
+    {
+      "path": "world-definition/scene.cpp",
+      "sha256": "f65bf5e84013fdcaac1c98626311f3636f45f74c97466af16e33e0a887ade3e7"
+    },
+    {
+      "path": "include/storm/scene_context.h",
+      "sha256": "2d1522eb42024041e50501e509aa57fe2b1bc4a202097dd1cf3f08157423b6c0"
+    },
+    {
+      "path": "src/render/scene_context.cpp",
+      "sha256": "921d9af87c077f2c6ea99d98ae1e4f64b99d7c00418bf623caa0432fb4ca0eb4"
+    },
+    {
+      "path": "world-definition/CMakeLists.txt",
+      "sha256": "d845288007a2c7103648585977169063b07effbbc4983bbdede1053b4a2c1f96"
+    },
+    {
+      "path": "world-definition/fwd.lock.json",
+      "sha256": "6b978dbf2237fd65172d25aaea8478a499ff98e8d4bdeea5f89e5dc1f153cf65"
+    }
+  ],
+  "ogre_archives": [
+    {
+      "path": "third_party/ogre-next/lib/macosx/libOgreMainStatic.a",
+      "sha256": "6dc05f6ddd049950e3c4f469292c47437f61163d5e8802d64306c5978ec78661"
+    },
+    {
+      "path": "third_party/ogre-next/lib/macosx/libOgreHlmsPbsStatic.a",
+      "sha256": "d4a13007180996d40bd75d1d4ce0e2acf37416e2c3248ea831771519d3dc39ec"
+    },
+    {
+      "path": "third_party/ogre-next/lib/macosx/libOgreHlmsUnlitStatic.a",
+      "sha256": "27db26c0290831a1c8f4eab64aab22f70d818c7f9e8e44bc6144b3fba622e3e7"
+    },
+    {
+      "path": "third_party/ogre-next/lib/macosx/libRenderSystem_MetalStatic.a",
+      "sha256": "26428b604c2b2b5541635ed76e7ebe395eddad8e5495fdd5265b8c22d9bd5115"
+    },
+    {
+      "path": "third_party/ogre-next/include/OgreBuildSettings.h",
+      "sha256": "1df5439ce21b9897c217c4c6ab84ddd56721ee8e6482b50edd9728551957e647"
+    },
+    {
+      "path": "third_party/ogre-next/include/OgreGL3PlusBuildSettings.h",
+      "sha256": "1e88f91cd9b8591ee6378a5a8eb522abbd5cdad3becf673138de667ff7bbd011"
+    },
+    {
+      "path": "third_party/ogre-next/include/OgreVulkanBuildSettings.h",
+      "sha256": "c6bb4a7bf2fb9273c784680601c172de08936069c8d7985060c36a8264e12b8c"
+    }
+  ],
+  "ogre_input_basis": "Stable local rebuilt OGRE archives, copied read-only from concurrent build; not relabeled as previous release checksums. Exact Metal gate rerun against this snapshot."
+}

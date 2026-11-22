@@ -1868,9 +1868,10 @@ if(FINALVERSE_NATIVE_UNIVERSE)
     "$<TARGET_PROPERTY:${VIEWER_BINARY_NAME},COMPILE_OPTIONS>")
   target_link_libraries(finalverse_viewer_native PRIVATE Finalverse::finalverse_native_sdk Storm::finalverse_storm)
   if(FINALVERSE_LIVING_WORLD)
-    target_sources(finalverse_viewer_native PRIVATE llfloaterfinalverseliving.cpp)
+    target_sources(finalverse_viewer_native PRIVATE llfloaterfinalverseliving.cpp llfloaterfinalverseshell.cpp)
     target_include_directories(finalverse_viewer_native PRIVATE "${FINALVERSE_LIVE_PREFIX}/include")
-    foreach(live_lib libmutsea_replica.0.dylib libworld_convergence.dylib)
+    # Ω-XVIII: FINALVERSE shell over the universal spatial contracts (libfinalverse_spatial).
+    foreach(live_lib libmutsea_replica.0.dylib libworld_convergence.dylib libfinalverse_spatial.1.dylib)
       target_link_libraries(${VIEWER_BINARY_NAME} "${FINALVERSE_LIVE_PREFIX}/lib/${live_lib}")
       if(APPLE)
         add_custom_command(TARGET ${VIEWER_BINARY_NAME} POST_BUILD

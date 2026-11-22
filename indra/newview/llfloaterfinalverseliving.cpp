@@ -1334,7 +1334,9 @@ void LLFloaterFinalverseLiving::draw()
 void llfinalverseLivingMaybeOpen()
 {
     static bool opened = false;
-    if (!opened && std::getenv("FINALVERSE_LIVE_TOKENS"))
+    // The Ω-XVIII FINALVERSE shell hosts the live world itself; do not open both.
+    const char* shell = std::getenv("FINALVERSE_SHELL");
+    if (!opened && std::getenv("FINALVERSE_LIVE_TOKENS") && !(shell && std::string(shell) == "1"))
     {
         opened = true;
         LLFloaterReg::showInstance("finalverse_living");

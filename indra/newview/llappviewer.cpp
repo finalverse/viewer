@@ -31,6 +31,7 @@
 #endif
 #if FINALVERSE_LIVING_WORLD
 #include "llfloaterfinalverseliving.h"
+#include "llfloaterfinalverseshell.h"
 #endif
 #include "finalversebrand.h"
 
@@ -5186,6 +5187,7 @@ void LLAppViewer::idle()
 #endif
 #if FINALVERSE_LIVING_WORLD
     llfinalverseLivingMaybeOpen();
+    llfinalverseShellMaybeOpen();
 #endif
     LL_PROFILE_ZONE_SCOPED_CATEGORY_APP;
     pingMainloopTimeout("Main:Idle");
