@@ -1,15 +1,35 @@
 <?xml version="1.0" encoding="utf-8"?>
-<floater name="finalverse_native" title="FINALVERSE · LIVING UNIVERSE" width="1040" height="740" layout="topleft" positioning="centered" can_resize="false" save_rect="true">
- <text left="20" top="32" width="800" height="30" font="SansSerifHuge">A living universe, connected.</text>
- <text name="connection" left="20" top="70" width="990" height="22">Connecting to Finalverse…</text>
- <combo_box name="worlds" left="20" top="106" width="300" height="30"/>
- <button name="connect" label="Reconnect" left="332" top="106" width="124" height="30"/>
- <button name="disconnect" label="Disconnect" left="468" top="106" width="124" height="30"/>
- <button name="orbit" label="Orbit" left="604" top="106" width="100" height="30"/>
- <button name="focus" label="Focus resident" left="716" top="106" width="150" height="30"/>
- <panel name="viewport" left="20" top="152" width="704" height="448" background_visible="true" bg_alpha_color="Black"/>
- <text name="residents" left="744" top="154" width="274" height="286" font="SansSerif" wrap="true"/>
- <text name="scene" left="744" top="458" width="274" height="140" font="SansSerifSmall" wrap="true"/>
- <text name="history" left="20" top="622" width="990" height="74" font="SansSerifSmall" wrap="true"/>
- <text left="20" top="708" width="990" height="20" font="SansSerifSmall">Scroll to zoom · Orbit to explore · Read-only world observation</text>
+<floater name="finalverse_native" title="FINALVERSE" width="1180" height="720" min_width="960" min_height="520" layout="topleft" positioning="centered" can_resize="true" save_rect="true" background_visible="true" bg_opaque_color="0.035 0.047 0.067 1">
+ <panel name="header_surface" left="0" top="22" width="1180" height="76" background_visible="true" bg_alpha_color="0.055 0.071 0.098 1"/>
+ <text name="brand" left="22" top="34" width="122" height="30" font="SansSerifBig" text_color="0.89 0.96 1 1">FINALVERSE</text>
+ <button name="mode_explore" label="Explore" tool_tip="Explore · Ctrl+1" left="152" top="30" width="88" height="30"/>
+ <button name="mode_create" label="Create" tool_tip="Create · Ctrl+2" left="248" top="30" width="88" height="30"/>
+ <button name="mode_develop" label="Develop" tool_tip="Develop · Ctrl+3" left="344" top="30" width="88" height="30"/>
+ <combo_box name="worlds" left="500" top="30" width="300" height="30" tool_tip="Authoritative connected worlds"/>
+ <button name="theme" label="Light" tool_tip="Switch local interface theme" left="812" top="30" width="72" height="30"/>
+ <button name="connect" label="Reconnect" left="892" top="30" width="110" height="30"/>
+ <button name="disconnect" label="Disconnect" left="1010" top="30" width="110" height="30"/>
+ <text name="connection" left="22" top="68" width="1110" height="20" font="SansSerifSmall">Connecting to the living world…</text>
+ <panel name="viewport" left="14" top="102" width="1152" height="438" background_visible="true" bg_alpha_color="0.035 0.05 0.075 1"/>
+ <panel name="inspector_surface" left="860" top="102" width="306" height="438" background_visible="true" bg_alpha_color="0.055 0.071 0.098 1"/>
+ <text name="inspector_title" left="878" top="120" width="270" height="24" font="SansSerifBig">World inspector</text>
+ <combo_box name="objects" left="878" top="156" width="270" height="28" tool_tip="Select an authoritative published object"/>
+ <text name="residents" left="878" top="198" width="270" height="158" font="SansSerifSmall" wrap="true"/>
+ <text name="scene" left="878" top="372" width="270" height="150" font="SansSerifSmall" wrap="true"/>
+ <panel name="command_surface" left="14" top="550" width="1152" height="148" background_visible="true" bg_alpha_color="0.055 0.071 0.098 1"/>
+ <combo_box name="resident_select" left="28" top="562" width="215" height="30" tool_tip="Select a persistent resident"/>
+ <button name="inspect" label="Info" left="250" top="562" width="58" height="30" tool_tip="Show identity, coordinates and WorldLine"/>
+ <button name="focus" label="Focus" left="316" top="562" width="64" height="30" tool_tip="Focus selected resident · F"/>
+ <button name="overview" label="Overview" left="388" top="562" width="86" height="30" tool_tip="Reset camera · Home"/>
+ <button name="orbit" label="Orbit" left="482" top="562" width="66" height="30" tool_tip="Orbit camera · O"/>
+ <combo_box name="lighting" left="556" top="562" width="100" height="30" tool_tip="Local lighting preview"><combo_box.item label="Daylight" value="daylight"/><combo_box.item label="Sunset" value="sunset"/></combo_box>
+ <button name="move_east" label="Plan east" left="664" top="562" width="94" height="30" tool_tip="Request a bounded move proposal; review before approval"/>
+ <button name="move_west" label="Plan west" left="766" top="562" width="94" height="30"/>
+ <button name="preview_plaza" label="Preview plaza" left="868" top="562" width="122" height="30" tool_tip="Create an authored preview; no persistent world effect"/>
+ <line_editor name="intent" left="28" top="602" width="780" height="30" max_length_bytes="1024" label="Ask about this world, say sunset, focus, cinematic, or preview a plaza…" select_on_focus="false"/>
+ <button name="send" label="Ask Finalverse" left="820" top="602" width="146" height="30"/>
+ <button name="approve" label="Approve reviewed plan" left="974" top="602" width="178" height="30" enabled="false" tool_tip="Approve only the concrete proposal shown below"/>
+ <text name="action_status" left="28" top="642" width="1120" height="38" font="SansSerifSmall" wrap="true">Explore freely. World changes require a reviewed proposal and explicit approval.</text>
+ <text name="history" left="28" top="682" width="1120" height="26" font="SansSerifSmall" wrap="true"/>
+ <text name="shortcuts" left="28" top="700" width="1100" height="18" font="SansSerifSmall">Ctrl+1 Explore · Ctrl+2 Create · Ctrl+3 Develop · F Focus · Home Overview · O Orbit · WASD Pan · Scroll Zoom</text>
 </floater>

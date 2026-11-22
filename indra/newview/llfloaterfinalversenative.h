@@ -14,11 +14,17 @@ public:
  void draw() override;
  bool handleScrollWheel(S32,S32,S32) override;
  bool handleKeyHere(KEY,MASK) override;
+ void reshape(S32,S32,bool called_from_parent=true) override;
 private:
  struct Impl;
  std::unique_ptr<Impl> mNative;
  void connect();
  void disconnect();
+ void arrange();
+ void appearance();
+ void mode(int);
+ void submit(const std::string&,const LLSD&);
+ void intent();
 };
 void llfinalverseNativeMaybeOpen();
 #endif

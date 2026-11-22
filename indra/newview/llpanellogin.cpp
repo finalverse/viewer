@@ -27,6 +27,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "llpanellogin.h"
+#include "lldir.h"
 #include "lllayoutstack.h"
 
 #include "indra_constants.h"        // for key and mask constants
@@ -976,6 +977,14 @@ void LLPanelLogin::handleMediaEvent(LLPluginClassMedia* self, EMediaEvent event)
 // static
 void LLPanelLogin::onClickConnect(bool commit_fields)
 {
+    // Isolated native showcases use only their scoped world gateway. Never let
+    // an input intended for that floater submit saved legacy grid credentials.
+    if (gDirUtilp && gDirUtilp->getBaseFileName(gDirUtilp->getOSUserAppDir()).starts_with("Finalverse-Native-"))
+    {
+        LLNotificationsUtil::add("GenericAlertOK", LLSD().with("MESSAGE",
+            "This isolated Finalverse showcase uses its private world connection. Grid login is disabled in this profile."));
+        return;
+    }
 #if LL_VELOPACK
     // In theory, you should never be able to get here.
     // If there's a required update, try as you might you're not supposed to actually close the downloading update dialog.
