@@ -834,6 +834,12 @@ struct Engine
     void pollAi()
     {
         if (aiRequestId.empty() || model.ai.stage != "planning") return;
+        if (Clock::now() - aiStarted > std::chrono::seconds(120))
+        {
+            model.ai.stage = "refused";
+            model.ai.message = "The AI navigator did not answer within 120 s; nothing was executed.";
+            return;
+        }
         auto raw = readSmall(fs::path(navigatorDir) / "status.json", 1 << 20);
         if (raw.empty()) return;
         try
@@ -1303,6 +1309,7 @@ void LLFloaterFinalverseShell::onOpen(const LLSD&)
         }
     }
     setFocus(true);
+    gFocusMgr.setKeyboardFocus(this);  // shortcuts work at once; the AI field takes focus on click, / or Ctrl+K
     LL_INFOS("FinalverseShell") << "FINALVERSE shell opened" << LL_ENDL;
 }
 
@@ -1349,6 +1356,7 @@ bool LLFloaterFinalverseShell::handleMouseUp(S32 x, S32 y, MASK mask)
     if (m->dragging)
     {
         m->dragging = false;
+        gFocusMgr.setKeyboardFocus(this);
         gFocusMgr.setMouseCapture(nullptr);
         return true;
     }
@@ -1382,11 +1390,16 @@ bool LLFloaterFinalverseShell::handleKeyHere(KEY key, MASK mask)
     auto* ask = getChild<LLLineEditor>("ask");
     if (ask->hasFocus())
     {
-        if (key == KEY_ESCAPE) { setFocus(true); return true; }
-        return LLFloater::handleKeyHere(key, mask);
+        // Typing stays in the field; Esc leaves it, and non-text shortcuts still work.
+        if (key == KEY_ESCAPE) { gFocusMgr.setKeyboardFocus(this); return true; }
+        const bool empty = ask->getText().empty();
+        if (!((mask & MASK_CONTROL) && (key == '=' || key == '-' || key == KEY_ADD || key == KEY_SUBTRACT)) &&
+            !(empty && (mask & MASK_ALT) && (key == KEY_LEFT || key == KEY_RIGHT)))
+            return LLFloater::handleKeyHere(key, mask);
     }
     if (!m->engine) return LLFloater::handleKeyHere(key, mask);
     Engine* e = m->engine.get();
+    if (key == '?' || (key == '/' && (mask & MASK_SHIFT))) { m->showHelp = !m->showHelp; return true; }
     if ((key == 'K' && (mask & MASK_CONTROL)) || key == '/') { ask->setFocus(true); return true; }
     if (key == KEY_LEFT && (mask & MASK_ALT)) { e->post([e] { e->back(false); }); return true; }
     if (key == KEY_RIGHT && (mask & MASK_ALT)) { e->post([e] { e->back(true); }); return true; }
@@ -1441,41 +1454,6 @@ void LLFloaterFinalverseShell::draw()
     const Model* v = m->view.get();
     Engine* eng = m->engine.get();
     const bool compact = W < 1180, wide = W > 1700;
-
-    // ---- scripted UI (same code paths as the controls; for reproducible evidence)
-    while (m->scriptNext < m->script.size() && t >= m->script[m->scriptNext].first && eng)
-    {
-        std::string cmd = m->script[m->scriptNext++].second, arg;
-        auto sp = cmd.find(' ');
-        if (sp != std::string::npos) { arg = cmd.substr(sp + 1); cmd = cmd.substr(0, sp); }
-        LL_INFOS("FinalverseShell") << "script t=" << fmt(t, 1) << " " << cmd << " " << arg << LL_ENDL;
-        if (cmd == "mode") m->mode = (Mode)llclamp(std::atoi(arg.c_str()) - 1, 0, 3);
-        else if (cmd == "go") eng->post([eng, arg] {
-            bj::object out; std::string why;
-            if (LLUUID::validate(arg)) { eng->navigate(arg); return; }
-            if (eng->call("SPATIAL.DISCOVER", { { "query", arg }, { "limit", 1 } }, out, why) == FV_SPATIAL_OK && !out.at("entities").as_array().empty())
-                eng->navigate(str(out.at("entities").as_array()[0].as_object(), "entity"));
-        });
-        else if (cmd == "goc") { auto c2 = arg.find(' '); eng->post([eng, a = arg.substr(c2 + 1), cap = arg.substr(0, c2)] {
-            bj::object out; std::string why;
-            if (eng->call("SPATIAL.DISCOVER", { { "query", a }, { "limit", 1 } }, out, why) == FV_SPATIAL_OK && !out.at("entities").as_array().empty())
-                eng->navigate(str(out.at("entities").as_array()[0].as_object(), "entity"), cap);
-        }); }
-        else if (cmd == "select" && v) { for (auto& c : v->ctx.children) if (c.label.find(arg) != std::string::npos) { eng->post([eng, c] { eng->select(c.entity, c.label); }); break; } }
-        else if (cmd == "ask") { getChild<LLLineEditor>("ask")->setText(arg); getChild<LLLineEditor>("ask")->onCommit(); }
-        else if (cmd == "back") eng->post([eng] { eng->back(false); });
-        else if (cmd == "forward") eng->post([eng] { eng->back(true); });
-        else if (cmd == "home") eng->post([eng] { eng->navigate(eng->startEntity); });
-        else if (cmd == "orbit") eng->post([eng] { eng->orbit = !eng->orbit; eng->camera(0, 0, 1.0); });
-        else if (cmd == "zoom") eng->post([eng, z = std::atof(arg.c_str())] { eng->camera(0, 0, z); });
-        else if (cmd == "yaw") eng->post([eng, z = std::atof(arg.c_str())] { eng->camera(z, 0, 1.0); });
-        else if (cmd == "scale") gScale = llclamp(std::atoi(arg.c_str()), 0, 2);
-        else if (cmd == "help") m->showHelp = arg == "on";
-        else if (cmd == "focus") m->focusIndex = std::atoi(arg.c_str());
-        else if (cmd == "move" && v) { auto p = arg.find(' '); std::string name = arg.substr(0, p); double dx = 0, dy = 0; std::istringstream(arg.substr(p + 1)) >> dx >> dy;
-            for (auto& r : v->residents) if (r.name == name) eng->post([eng, id = r.id, dx, dy] { eng->move(id, dx, dy); }); }
-        else if (cmd == "mark") LL_INFOS("FinalverseShell") << "MARK " << arg << " context=" << (v ? v->ctx.label : "") << " rev=" << (v ? v->live.revision : 0) << LL_ENDL;
-    }
 
     // ---- viewport: Storm frame, full bleed, cropped not stretched
     gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
@@ -2041,6 +2019,85 @@ void LLFloaterFinalverseShell::draw()
         text("Keyboard", l + 24, tt - 32, T.ink, 1, true);
         S32 y = tt - 60;
         for (auto& r : rows) { text(r[0], l + 24, y, T.accent, 0, true); text(r[1], l + 230, y, T.ink2, 0); y -= 22; }
+    }
+
+    // ---- scripted UI (same code paths as the controls; for reproducible evidence). Runs after
+    // the frame built its hit and focus lists, exactly like real input between frames.
+    while (m->scriptNext < m->script.size() && t >= m->script[m->scriptNext].first && eng)
+    {
+        std::string cmd = m->script[m->scriptNext++].second, arg;
+        auto sp = cmd.find(' ');
+        if (sp != std::string::npos) { arg = cmd.substr(sp + 1); cmd = cmd.substr(0, sp); }
+        LL_INFOS("FinalverseShell") << "script t=" << fmt(t, 1) << " " << cmd << " " << arg << LL_ENDL;
+        if (cmd == "mode") m->mode = (Mode)llclamp(std::atoi(arg.c_str()) - 1, 0, 3);
+        else if (cmd == "go") eng->post([eng, arg] {
+            bj::object out; std::string why;
+            if (LLUUID::validate(arg)) { eng->navigate(arg); return; }
+            if (eng->call("SPATIAL.DISCOVER", { { "query", arg }, { "limit", 1 } }, out, why) == FV_SPATIAL_OK && !out.at("entities").as_array().empty())
+                eng->navigate(str(out.at("entities").as_array()[0].as_object(), "entity"));
+        });
+        else if (cmd == "goc") { auto c2 = arg.find(' '); eng->post([eng, a = arg.substr(c2 + 1), cap = arg.substr(0, c2)] {
+            bj::object out; std::string why;
+            if (eng->call("SPATIAL.DISCOVER", { { "query", a }, { "limit", 1 } }, out, why) == FV_SPATIAL_OK && !out.at("entities").as_array().empty())
+                eng->navigate(str(out.at("entities").as_array()[0].as_object(), "entity"), cap);
+        }); }
+        else if (cmd == "select" && v) { for (auto& c : v->ctx.children) if (c.label.find(arg) != std::string::npos) { eng->post([eng, c] { eng->select(c.entity, c.label); }); break; } }
+        else if (cmd == "ask") { getChild<LLLineEditor>("ask")->setText(arg); getChild<LLLineEditor>("ask")->onCommit(); }
+        else if (cmd == "back") eng->post([eng] { eng->back(false); });
+        else if (cmd == "forward") eng->post([eng] { eng->back(true); });
+        else if (cmd == "home") eng->post([eng] { eng->navigate(eng->startEntity); });
+        else if (cmd == "orbit") eng->post([eng] { eng->orbit = !eng->orbit; eng->camera(0, 0, 1.0); });
+        else if (cmd == "zoom") eng->post([eng, z = std::atof(arg.c_str())] { eng->camera(0, 0, z); });
+        else if (cmd == "yaw") eng->post([eng, z = std::atof(arg.c_str())] { eng->camera(z, 0, 1.0); });
+        else if (cmd == "scale") gScale = llclamp(std::atoi(arg.c_str()), 0, 2);
+        else if (cmd == "help") m->showHelp = arg == "on";
+        else if (cmd == "focus") m->focusIndex = std::atoi(arg.c_str());
+        else if (cmd == "move" && v) { auto p = arg.find(' '); std::string name = arg.substr(0, p); double dx = 0, dy = 0; std::istringstream(arg.substr(p + 1)) >> dx >> dy;
+            for (auto& r : v->residents) if (r.name == name) eng->post([eng, id = r.id, dx, dy] { eng->move(id, dx, dy); }); }
+        // UI input test hooks: these go through the floater's own event handlers (hit-testing,
+        // focus traversal, keyboard routing, the line editor), not through the engine.
+        else if (cmd == "key")
+        {
+            static const std::map<std::string, std::pair<KEY, MASK>> keys{
+                { "TAB", { KEY_TAB, MASK_NONE } }, { "SHIFTTAB", { KEY_TAB, MASK_SHIFT } }, { "RETURN", { KEY_RETURN, MASK_NONE } },
+                { "ESC", { KEY_ESCAPE, MASK_NONE } }, { "BACKSPACE", { KEY_BACKSPACE, MASK_NONE } }, { "ALTLEFT", { KEY_LEFT, MASK_ALT } },
+                { "ALTRIGHT", { KEY_RIGHT, MASK_ALT } }, { "SLASH", { '/', MASK_NONE } }, { "HELP", { '/', MASK_SHIFT } }, { "H", { 'H', MASK_NONE } },
+                { "1", { '1', MASK_NONE } }, { "2", { '2', MASK_NONE } }, { "3", { '3', MASK_NONE } }, { "4", { '4', MASK_NONE } },
+                { "CTRLPLUS", { '=', MASK_CONTROL } }, { "CTRLMINUS", { '-', MASK_CONTROL } }, { "LEFT", { KEY_LEFT, MASK_NONE } } };
+            if (auto it = keys.find(arg); it != keys.end())
+            {
+                auto* ask = getChild<LLLineEditor>("ask");
+                // Same route as LLViewerWindow: the keyboard-focus view first, then up its parents.
+                LLView* target = dynamic_cast<LLView*>(gFocusMgr.getKeyboardFocus());
+                if (!target || (target != this && !target->hasAncestor(this))) target = this;
+                const bool handled = target->handleKey(it->second.first, it->second.second, false);
+                LL_INFOS("FinalverseShell") << "UITEST key " << arg << " handled=" << handled << " focus=" << (m->focusIndex >= 0 && m->focusIndex < (int)m->focusOrder.size() ? m->focusOrder[m->focusIndex] : "-")
+                                            << " ask_focused=" << ask->hasFocus() << " mode=" << modeName(m->mode) << LL_ENDL;
+            }
+        }
+        else if (cmd == "click")
+        {
+            // click X% Y% of the window (origin bottom-left, as LLView coordinates)
+            double fx = 0, fy = 0;
+            std::istringstream(arg) >> fx >> fy;
+            const S32 x = (S32)(fx * W / 100.0), y = (S32)(fy * H / 100.0);
+            const bool down = handleMouseDown(x, y, MASK_NONE);
+            handleMouseUp(x, y, MASK_NONE);
+            LL_INFOS("FinalverseShell") << "UITEST click " << x << "," << y << " handled=" << down << " mode=" << modeName(m->mode) << LL_ENDL;
+        }
+        else if (cmd == "typeask")
+        {
+            auto* ask = getChild<LLLineEditor>("ask");
+            for (llwchar ch : utf8str_to_wstring(arg)) ask->handleUnicodeCharHere(ch);
+            LL_INFOS("FinalverseShell") << "UITEST typed " << arg.size() << " bytes ask_text=" << ask->getText() << LL_ENDL;
+        }
+        else if (cmd == "probe")
+        {
+            std::string order;
+            for (auto& id : m->focusOrder) order += id + "|";
+            LL_INFOS("FinalverseShell") << "UITEST probe focus_order=" << order << " focus=" << m->focusIndex << " context=" << (v ? v->ctx.label : "") << " selected=" << (v ? v->selectedLabel : "") << LL_ENDL;
+        }
+        else if (cmd == "mark") LL_INFOS("FinalverseShell") << "MARK " << arg << " context=" << (v ? v->ctx.label : "") << " rev=" << (v ? v->live.revision : 0) << LL_ENDL;
     }
 
     LLFloater::draw();  // the AI line editor
