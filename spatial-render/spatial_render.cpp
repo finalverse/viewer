@@ -194,6 +194,43 @@ std::vector<storm::RenderObjectId> sky(storm::Renderer &r) {
   return ids;
 }
 
+// Ω-XIX studio backdrop for engineering contexts: a graded dark dome (presentation only).
+std::vector<storm::RenderObjectId> studio_dome(storm::Renderer &r) {
+  constexpr unsigned rings = 40, segments = 96;
+  std::vector<storm::RenderObjectId> ids;
+  for (unsigned band = 0; band < rings; band++) {
+    std::vector<float> v;
+    std::vector<uint32_t> idx;
+    const double a = -M_PI / 2 + M_PI * band / rings, b = -M_PI / 2 + M_PI * (band + 1) / rings;
+    for (unsigned j = 0; j <= segments; j++)
+      for (double e : {a, b}) {
+        const double ang = 2 * M_PI * j / segments;
+        v.insert(v.end(), {float(1500 * std::cos(e) * std::sin(ang)), float(1500 * std::sin(e)), float(1500 * std::cos(e) * std::cos(ang))});
+      }
+    for (unsigned j = 0; j < segments; j++) { uint32_t n = j * 2; idx.insert(idx.end(), {n, n + 2, n + 1, n + 1, n + 2, n + 3}); }
+    const float t = float(band) / rings;  // 0 = nadir, 1 = zenith
+    const float g = t < .5f ? .035f + .05f * t : .06f + .10f * (t - .5f);
+    const float c[] = {g, g * 1.04f, g * 1.16f};
+    ids.push_back(r.add_surface(v.data(), v.size() / 3, idx.data(), idx.size(), c, true, 1, 0));
+  }
+  return ids;
+}
+
+// Ω-XIX presentation stage under an engineering model (receives light and reflections;
+// never part of the publication, never a measurement).
+storm::RenderObjectId stage(storm::Renderer &r, double radius) {
+  std::vector<float> v{0, 0, 0};
+  std::vector<uint32_t> idx;
+  const unsigned seg = 128;
+  for (unsigned i = 0; i <= seg; i++) {
+    const double a = 2 * M_PI * i / seg;
+    v.insert(v.end(), {float(radius * std::cos(a)), 0.f, float(radius * std::sin(a))});
+  }
+  for (unsigned i = 1; i <= seg; i++) idx.insert(idx.end(), {0u, i + 1, i});
+  const float colour[] = {.045f, .048f, .056f};
+  return r.add_surface(v.data(), v.size() / 3, idx.data(), idx.size(), colour, false, .62f, 0);
+}
+
 // A presentation-only beacon (ring + pillar) for an overlay marker, render-space metres.
 storm::RenderObjectId beacon(storm::Renderer &r, double radius) {
   std::vector<float> v;
@@ -276,6 +313,10 @@ int main(int argc, char **argv) {
     const char *shadowSetting = std::getenv("FINALVERSE_STORM_SHADOWS");
     living::Shadows shadows(shadowSetting && std::string(shadowSetting) == "1");
     std::vector<storm::RenderObjectId> skyIds, beacons;
+    storm::RenderObjectId stageId{};
+    double stageY = 0, stageX = 0, stageZ = 0;
+    std::string environmentFor;
+    const bool fidelity = !(std::getenv("FINALVERSE_STORM_FIDELITY") && std::string(std::getenv("FINALVERSE_STORM_FIDELITY")) == "0");
     std::vector<Vec> beaconPositions;
     Control active;
     bool haveContext = false;
@@ -319,15 +360,26 @@ int main(int argc, char **argv) {
               need(contexts.activate(c.context, e), e);
               for (auto id : skyIds) renderer.remove_object(id);
               skyIds.clear();
+              if (!(stageId == storm::RenderObjectId{})) { renderer.remove_object(stageId); stageId = {}; }
               const auto *info = contexts.info(c.context);
               unit = info->unit_to_metre;
               origin = info->origin;
               const bool geographic = info->axes != "x,y,z";
               if (geographic) skyIds = sky(renderer);
-              // Storm has no image-based lighting yet: fully metallic PBR reads almost black.
-              // Engineering contexts are presented with metallic capped (display only; the
-              // authored GLB material is unchanged and restored by highlight()).
-              if (!geographic)
+              else if (fidelity) {
+                // Ω-XIX: studio dome + stage under the model, framed from its declared bounds.
+                skyIds = studio_dome(renderer);
+                double span = 0;
+                for (int k = 0; k < 2; k++) span = std::max(span, (info->maximum[k] - info->minimum[k]) * unit);
+                stageId = stage(renderer, std::max(span * 1.6, .02));
+                stageY = (info->minimum[2] - origin[2]) * unit - std::max(span * .004, .00005);
+                stageX = ((info->minimum[0] + info->maximum[0]) / 2 - origin[0]) * unit;
+                stageZ = ((info->minimum[1] + info->maximum[1]) / 2 - origin[1]) * unit;
+              }
+              // Without image-based lighting fully metallic PBR reads almost black, so the
+              // Ω-XVIII path capped metallic (display only). With the Ω-XIX environment map the
+              // authored GLB material is shown as authored.
+              if (!geographic && !fidelity)
                 for (auto &surface : *contexts.surfaces())
                   if (surface.mesh.metallic > .35f) {
                     surface.mesh.metallic = .35f;
@@ -349,7 +401,14 @@ int main(int argc, char **argv) {
             }
             const float tint[] = {.25f, .7f, 1.f};
             contexts.highlight(c.highlight, tint);
-            lighting(renderer, c.lighting == "daylight" && contexts.info(c.context)->axes == "x,y,z" ? "studio" : c.lighting);
+            const std::string preset = c.lighting == "daylight" && contexts.info(c.context)->axes == "x,y,z" ? "studio" : c.lighting;
+            lighting(renderer, preset);
+            if (fidelity && preset != environmentFor) {
+              const auto e0 = Clock::now();
+              const bool ok = renderer.set_environment(preset == "studio" ? storm::Renderer::Environment::Studio : preset == "sunset" ? storm::Renderer::Environment::Sunset : storm::Renderer::Environment::Daylight);
+              std::cerr << "FINALVERSE spatial render: environment " << preset << (ok ? " ready in " : " refused: ") << (ok ? std::to_string(std::chrono::duration<double, std::milli>(Clock::now() - e0).count()) + " ms" : renderer.error()) << "\n";
+              environmentFor = preset;
+            }
             // Camera: focus in declared units -> metres relative to the context origin.
             for (int k = 0; k < 3; k++) desiredFocus[k] = (c.center[k] - origin[k]) * unit;
             double extentM = 0;
@@ -373,7 +432,7 @@ int main(int argc, char **argv) {
               pitch = desiredPitch;
               yaw = desiredYaw;
             }
-            renderer.set_clip_distances(float(std::max(desiredDistance / 4000., .0004)), float(std::max(desiredDistance * 60., geographic_far(contexts.info(c.context)->axes))));
+            renderer.set_clip_distances(float(std::max(desiredDistance / 4000., .0004)), float(std::max(desiredDistance * 60., fidelity ? 3200. : geographic_far(contexts.info(c.context)->axes))));
             active = c;
             haveContext = true;
             lastError.clear();
@@ -457,6 +516,11 @@ int main(int argc, char **argv) {
         const float pulse = float(1 + .06 * std::sin(now * 3));
         const float sc[] = {pulse, 1, pulse};
         renderer.set_transform(beacons[b], off, sc);
+      }
+      if (!(stageId == storm::RenderObjectId{})) {
+        const float off[] = {float(stageX - focus[0]), float(stageY - focus[2]), float(-(stageZ - focus[1]))};
+        const float one[] = {1, 1, 1};
+        renderer.set_transform(stageId, off, one);
       }
       renderer.set_camera_orbit(float(yaw), float(pitch), float(distance));
       need(renderer.render_frame(dt), renderer.error());
