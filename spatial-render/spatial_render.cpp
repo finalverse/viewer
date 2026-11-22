@@ -8,12 +8,15 @@
 //
 // Control: owner-private OUTPUT/context.json (finalverse.storm-scene-context/0.1),
 // residents: OUTPUT/scene-update.json (finalverse.scene-update/0.1, Ω-XV contract).
-// Output: frame.ppm + frame.json (finalverse.storm-view-frame/0.2). No world token,
-// no model, no persistent writer: presentation only.
+// Output (Ω-XIX, default): native shared-memory frames, finalverse.storm-frame-transport/1
+// (frame_transport.h; discovery OUTPUT/transport.json). FINALVERSE_STORM_TRANSPORT=file
+// keeps the Ω-XVIII fallback: frame.ppm + frame.json (finalverse.storm-view-frame/0.2);
+// "both" writes both. No world token, no model, no persistent writer: presentation only.
 #include "storm/fwd_scene.h"
 #include "storm/render/renderer.h"
 #include "storm/scene_context.h"
 #include "bridge.h"
+#include "frame_transport.h"
 #include "shadows.h"
 #include <SDL3/SDL.h>
 #include <openssl/sha.h>
@@ -26,6 +29,7 @@
 #include <fstream>
 #include <iostream>
 #include <thread>
+#include <csignal>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -214,6 +218,9 @@ storm::RenderObjectId beacon(storm::Renderer &r, double radius) {
 
 double geographic_far(const std::string &axes) { return axes == "x,y,z" ? 50.0 : 6000.0; }
 
+volatile std::sig_atomic_t gStop = 0;
+void on_signal(int) { gStop = 1; }
+
 using Writer = rapidjson::Writer<rapidjson::StringBuffer>;
 void str(Writer &w, const char *k, const std::string &s) { w.Key(k); w.String(s.c_str()); }
 }  // namespace
@@ -230,16 +237,40 @@ int main(int argc, char **argv) {
     fs::permissions(out, fs::perms::owner_all);
     const std::string region = argc == 6 ? argv[5] : "";
     need(region.empty() || living::uuid(region), "region UUID");
+    std::signal(SIGTERM, on_signal);
+    std::signal(SIGINT, on_signal);
+    const std::string transportMode = std::getenv("FINALVERSE_STORM_TRANSPORT") ? std::getenv("FINALVERSE_STORM_TRANSPORT") : "shm";
+    need(transportMode == "shm" || transportMode == "file" || transportMode == "both", "FINALVERSE_STORM_TRANSPORT must be shm, file or both");
+    const bool useShm = transportMode != "file", useFile = transportMode != "shm";
+    uint32_t captureW = 1280, captureH = 720;
+    if (const char *size = std::getenv("FINALVERSE_STORM_SIZE")) {
+      need(std::sscanf(size, "%ux%u", &captureW, &captureH) == 2 && captureW >= 320 && captureH >= 180 && captureW <= fvft::kMaxWidth && captureH <= fvft::kMaxHeight, "FINALVERSE_STORM_SIZE WxH");
+      need(!useFile || (captureW == 1280 && captureH == 720), "the file fallback carries 1280x720 only");
+    }
+    const int msaa = std::getenv("FINALVERSE_STORM_MSAA") ? std::atoi(std::getenv("FINALVERSE_STORM_MSAA")) : 1;
+    need(msaa == 1 || msaa == 2 || msaa == 4 || msaa == 8, "FINALVERSE_STORM_MSAA must be 1, 2, 4 or 8");
     storm::RendererConfig cfg;
     cfg.title = "FINALVERSE · Storm spatial renderer";
     cfg.media_root = argv[1];
+    cfg.capture_width = captureW;
+    cfg.capture_height = captureH;
+    cfg.capture_samples = uint8_t(msaa);
+    const bool hidden = std::string(argv[4]) == "hidden";
+    if (hidden) cfg.vsync = false;  // nothing is presented on screen; pacing is the loop's own
     storm::Renderer renderer;
     need(renderer.initialize(cfg), renderer.error());
-    if (std::string(argv[4]) == "hidden") {
+    if (hidden) {
       int n = 0;
       SDL_Window **ws = SDL_GetWindows(&n);
       for (int i = 0; i < n; i++) SDL_HideWindow(ws[i]);
       SDL_free(ws);
+      renderer.set_window_presentation(false);  // draw each frame once, into the capture target
+    }
+    fvft::Producer transport;
+    if (useShm) {
+      std::string e;
+      need(transport.create(captureW, captureH, e), e);
+      save(out / "transport.json", transport.discovery());
     }
     storm::SceneContexts contexts(renderer);
     const char *shadowSetting = std::getenv("FINALVERSE_STORM_SHADOWS");
@@ -261,13 +292,16 @@ int main(int argc, char **argv) {
     const auto started = Clock::now();
     std::vector<uint8_t> rgba;
     auto previous = Clock::now();
-    const int captureEvery = std::max(1, std::atoi(std::getenv("FINALVERSE_STORM_CAPTURE_EVERY") ? std::getenv("FINALVERSE_STORM_CAPTURE_EVERY") : "2"));
-    for (int i = 0; i < frames; i++) {
+    const int captureEvery = std::max(1, std::atoi(std::getenv("FINALVERSE_STORM_CAPTURE_EVERY") ? std::getenv("FINALVERSE_STORM_CAPTURE_EVERY") : useShm ? "1" : "2"));
+    uint64_t published = 0, dropped = 0;
+    for (int i = 0; i < frames && !gStop; i++) {
       const auto t0 = Clock::now();
+      const uint64_t t0ns = fvft::now_ns();
       const double dt = std::clamp(std::chrono::duration<double>(t0 - previous).count(), 1. / 240., .1);
       previous = t0;
       SDL_Event ev;
       while (SDL_PollEvent(&ev)) if (ev.type == SDL_EVENT_QUIT) i = frames;
+      if (useShm) transport.heartbeat();
       // ---------------------------------------------------------- control
       try {
         if (fs::exists(out / "context.json")) {
@@ -429,6 +463,37 @@ int main(int argc, char **argv) {
       shadows.after_first_frame();
       // ---------------------------------------------------------- capture
       if (haveContext && (i % captureEvery == 0)) {
+        const auto *info = contexts.info(active.context);
+        if (useShm) {
+          // Native path: GPU readback straight into the transport's back slot, then publish.
+          const auto c0 = Clock::now();
+          uint32_t fw = 0, fh = 0;
+          need(renderer.read_frame_into(transport.back_pixels(), transport.stride_for(captureW), captureW, captureH, fw, fh), renderer.error());
+          lastCaptureMs = std::chrono::duration<double, std::milli>(Clock::now() - c0).count();
+          fvft::SlotMeta &m = transport.back_meta();
+          m.frame_index = renderer.stats().frame_index;
+          m.render_start_ns = t0ns;
+          m.control_sequence = active.sequence;
+          m.source_revision = sourceRevision;
+          m.triangles = renderer.triangle_count();
+          m.context_switches = switches;
+          m.refusals = refusals;
+          m.width = fw; m.height = fh; m.stride = transport.stride_for(fw); m.objects = renderer.object_count();
+          m.flags = (interpolating ? 0u : uint32_t(fvft::SETTLED)) | (active.live ? uint32_t(fvft::LIVE_WORLD) : 0u);
+          m.capture_ms = float(lastCaptureMs); m.switch_ms = float(lastSwitchMs); m.cpu_submit_ms = float(renderer.stats().frame_ms); m.gpu_wait_ms = 0;
+          m.unit_to_metre = unit; m.camera_distance_m = distance;
+          fvft::copy_text(m.context, sizeof m.context, active.context);
+          fvft::copy_text(m.definition_sha256, sizeof m.definition_sha256, active.definition);
+          fvft::copy_text(m.frame_id, sizeof m.frame_id, info ? info->frame_id : "");
+          fvft::copy_text(m.units, sizeof m.units, info ? info->units : "");
+          fvft::copy_text(m.transition, sizeof m.transition, active.transition);
+          fvft::copy_text(m.synchronization, sizeof m.synchronization, active.live ? sync : "static");
+          fvft::copy_text(m.backend, sizeof m.backend, "OGRE Metal");
+          fvft::copy_text(m.last_error, sizeof m.last_error, lastError);
+          if (transport.publish()) published++; else { published++; dropped++; }
+          captures++;
+        }
+        if (useFile) {
         const auto c0 = Clock::now();
         auto part = out / "frame.part.ppm";
         uint32_t fw = 0, fh = 0;
@@ -441,7 +506,6 @@ int main(int argc, char **argv) {
         const auto pixels = sha(image);
         fs::rename(part, out / "frame.ppm");
         lastCaptureMs = std::chrono::duration<double, std::milli>(Clock::now() - c0).count();
-        const auto *info = contexts.info(active.context);
         rapidjson::StringBuffer buf;
         Writer w(buf);
         w.StartObject();
@@ -473,12 +537,15 @@ int main(int argc, char **argv) {
         w.Key("presentation_only"); w.Bool(true);
         w.EndObject();
         save(out / "frame.json", {buf.GetString(), buf.GetSize()});
-        captures++;
+        if (!useShm) captures++;
+        }
       }
       std::this_thread::sleep_until(t0 + std::chrono::nanoseconds(16666667));
     }
     contexts.release();
-    std::cout << "{\"captures\":" << captures << ",\"switches\":" << switches << ",\"refusals\":" << refusals << ",\"world_mutated\":false}\n";
+    transport.close();  // state CLOSED, shared-memory name unlinked
+    std::cout << "{\"captures\":" << captures << ",\"switches\":" << switches << ",\"refusals\":" << refusals << ",\"transport\":\"" << transportMode
+              << "\",\"published\":" << published << ",\"dropped_unconsumed\":" << dropped << ",\"world_mutated\":false}\n";
     return 0;
   } catch (const std::exception &e) {
     std::cerr << "FINALVERSE spatial render: " << e.what() << "\n";

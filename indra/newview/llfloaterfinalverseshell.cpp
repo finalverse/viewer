@@ -16,6 +16,7 @@
 #include "finalverse/convergence.h"
 #include "finalverse/spatial.h"
 #include "mutsea/replica.h"
+#include "../../spatial-render/frame_transport.h"  // Ω-XIX native Storm frame transport
 
 #include "llfloaterreg.h"
 #include "llfocusmgr.h"
@@ -243,6 +244,15 @@ std::string hexOf(const uint8_t* p, size_t n)
     for (size_t i = 0; i < n; ++i) s += d[p[i] >> 4], s += d[p[i] & 15];
     return s;
 }
+std::string pctl(std::vector<double> xs, int p)
+{
+    if (xs.empty()) return "-";
+    std::sort(xs.begin(), xs.end());
+    std::ostringstream o;
+    o << std::fixed << std::setprecision(2) << xs[std::min(xs.size() - 1, size_t(std::lround(p / 100.0 * double(xs.size() - 1))))];
+    return o.str();
+}
+
 std::string sha256(const std::string& bytes)
 {
     uint8_t h[32];
@@ -348,9 +358,11 @@ struct Resident { std::string id, asset, name; double region[3]{}, displayed[3]{
 struct Event { uint64_t seq = 0, revision = 0; std::string action, kind, entity; };
 struct Frame
 {
-    std::vector<uint8_t> rgb;  // 1280x720, top row first, as delivered by Storm
-    uint64_t number = 0, triangles = 0, controlSeq = 0, sourceRevision = 0;
-    std::string context, units, frameId, transition;
+    std::vector<uint8_t> rgb;  // pixels, top row first, as delivered by Storm (RGB for the file path, RGBA native)
+    int width = 1280, height = 720, comps = 3;
+    uint64_t number = 0, triangles = 0, controlSeq = 0, sourceRevision = 0, sequence = 0;
+    uint64_t renderStartNs = 0, producedNs = 0, acquiredNs = 0;
+    std::string context, units, frameId, transition, transport = "file";
     bool settled = false;
     double captureMs = 0, switchMs = 0;
 };
@@ -1146,6 +1158,60 @@ struct Engine
     std::string pendingNote;
     Clock::time_point navStart = Clock::now();
     uint64_t framesTorn = 0;
+    // Ω-XIX native transport (finalverse.storm-frame-transport/1). The UI thread owns the
+    // shared-memory consumer and uploads straight from the acquired slot (no engine hop, no
+    // copy); it hands the slot metadata here so navigation timing and the model stay current.
+    std::atomic<bool> nativeActive{false};
+    std::mutex nativeMetaM;
+    fvft::SlotMeta nativeMeta{};
+    uint64_t nativeMetaSeen = 0;
+    std::string transportMode = "file";
+
+    void nativePresented(const fvft::SlotMeta& mm)
+    {
+        std::lock_guard g(nativeMetaM);
+        nativeMeta = mm;
+    }
+
+    void framePresented(const std::shared_ptr<Frame>& f)
+    {
+        frame = f;
+        if (model.navigating && f->controlSeq >= model.controlSeq && f->settled && model.ai.stage != "executing")
+        {
+            model.navigating = false;
+            LL_INFOS("FinalverseShell") << "navigation presented context=" << model.ctx.label << " request_to_settled_frame_ms="
+                                        << fmt(std::chrono::duration<double, std::milli>(Clock::now() - navStart).count(), 1)
+                                        << " storm_switch_ms=" << fmt(f->switchMs, 1) << " triangles=" << f->triangles
+                                        << " transport=" << f->transport << LL_ENDL;
+        }
+    }
+
+    // Returns true while the native transport is in charge of frames.
+    bool tickNativeFrames()
+    {
+        if (!nativeActive) return false;
+        fvft::SlotMeta mm;
+        {
+            std::lock_guard g(nativeMetaM);
+            if (nativeMeta.sequence == nativeMetaSeen) return true;
+            mm = nativeMeta;
+            nativeMetaSeen = mm.sequence;
+        }
+        auto f = std::make_shared<Frame>();  // metadata only: the pixels never leave the UI thread
+        f->width = int(mm.width); f->height = int(mm.height); f->comps = 4;
+        f->number = mm.frame_index; f->triangles = mm.triangles; f->controlSeq = mm.control_sequence; f->sourceRevision = mm.source_revision;
+        f->sequence = mm.sequence; f->renderStartNs = mm.render_start_ns; f->producedNs = mm.produced_ns;
+        f->context = fvft::text(mm.context, sizeof mm.context);
+        f->units = fvft::text(mm.units, sizeof mm.units);
+        f->frameId = fvft::text(mm.frame_id, sizeof mm.frame_id);
+        f->transition = fvft::text(mm.transition, sizeof mm.transition);
+        f->settled = (mm.flags & fvft::SETTLED) != 0;
+        f->captureMs = mm.capture_ms; f->switchMs = mm.switch_ms;
+        f->transport = "native";
+        transportMode = "native";
+        framePresented(f);
+        return true;
+    }
 
     // ------------------------------------------------------------------ Storm frames
     void tickFrames()
@@ -1162,6 +1228,8 @@ struct Engine
                 writeContext(model.ctx, currentManifest, "none", hl);
                 LL_INFOS("FinalverseShell") << "renderer restarted: context re-sent control_seq=" << model.controlSeq << LL_ENDL;
             }
+            if (tickNativeFrames()) return;
+            transportMode = "file";
             if (!fs::exists(dir / "frame.json")) return;
             auto t = fs::last_write_time(dir / "frame.json");
             if (t == frameTime && frame) return;
@@ -1200,14 +1268,7 @@ struct Engine
             f->switchMs = num(j.at("last_switch_ms"));
             f->rgb.assign(bytes.begin() + off, bytes.end());  // one copy; no per-pixel conversion
             frameTime = t;
-            frame = f;
-            if (model.navigating && f->controlSeq >= model.controlSeq && f->settled && model.ai.stage != "executing")
-            {
-                model.navigating = false;
-                LL_INFOS("FinalverseShell") << "navigation presented context=" << model.ctx.label << " request_to_settled_frame_ms="
-                                            << fmt(std::chrono::duration<double, std::milli>(Clock::now() - navStart).count(), 1)
-                                            << " storm_switch_ms=" << fmt(f->switchMs, 1) << " triangles=" << f->triangles << LL_ENDL;
-            }
+            framePresented(f);
         }
         catch (const std::exception&) {}
     }
@@ -1244,6 +1305,7 @@ struct Engine
             pollAi();
             while (!model.toasts.empty() && Clock::now() - model.toasts.front().second > std::chrono::seconds(6)) model.toasts.pop_front();
             publish();
+            // The native transport is polled at ~250 Hz so a published frame waits at most ~4 ms.
             if (!job) std::this_thread::sleep_for(std::chrono::milliseconds(12));
         }
     }
@@ -1270,6 +1332,77 @@ struct LLFloaterFinalverseShell::Impl
     uint64_t imageFrame = 0;
     // Measurement (script command `perf`): shell draws and Storm frames presented since the last report.
     uint64_t perfDraws = 0, perfPresented = 0;
+    std::deque<double> displayMs, transportMs;  // native: produced -> uploaded / produced -> acquired, last 600 frames
+    fvft::Consumer native;
+    std::string nativeError;
+    double nativeCheckAt = -1;
+    int nativeW = 0, nativeH = 0;
+    uint64_t nativeSeq = 0;
+    // Native transport on the UI thread: discover, attach, acquire the newest frame and upload it
+    // straight from the shared slot. Returns true when a native image is available to draw.
+    bool pumpNative(double t)
+    {
+        Engine* e = engine.get();
+        if (!e || e->frames.empty()) return false;
+        const fs::path disc = fs::path(e->frames) / "transport.json";
+        if (native.attached() && (native.state() == fvft::CLOSED || !native.producer_alive()))
+        {
+            LL_INFOS("FinalverseShell") << "native transport: producer gone (state=" << native.state() << ") published=" << native.published()
+                                        << " dropped=" << native.dropped() << "; detaching" << LL_ENDL;
+            native.detach();
+            e->nativeActive = false;
+            nativeW = nativeH = 0;
+        }
+        if (!native.attached())
+        {
+            if (t < nativeCheckAt) return false;
+            nativeCheckAt = t + .5;  // discovery is a file read: at most twice a second
+            try
+            {
+                if (!fs::exists(disc)) return false;
+                auto j = bj::parse(readSmall(disc, 4096)).as_object();
+                if (str(j, "schema") != fvft::kSchema) return false;
+                std::string err;
+                if (!native.attach(str(j, "shm"), str(j, "nonce"), err))
+                {
+                    if (err != nativeError) LL_WARNS("FinalverseShell") << "native transport refused: " << err << " (file fallback stays available)" << LL_ENDL;
+                    nativeError = err;
+                    return false;
+                }
+                nativeError.clear();
+                LL_INFOS("FinalverseShell") << "native transport attached shm=" << str(j, "shm") << " max=" << j.at("max_width").to_number<int>() << "x"
+                                            << j.at("max_height").to_number<int>() << LL_ENDL;
+                e->nativeActive = true;
+            }
+            catch (const std::exception&) { return false; }
+        }
+        fvft::Acquired a;
+        if (native.acquire(a))
+        {
+            const auto& mm = a.meta;
+            auto pow2 = [](int v) { int p = 1; while (p < v) p <<= 1; return p; };
+            const int TW = pow2(int(mm.width)), TH = pow2(int(mm.height));
+            if (staging.isNull() || staging->getComponents() != 4 || staging->getWidth() != TW || staging->getHeight() != TH || image.isNull())
+            {
+                staging = new LLImageRaw(TW, TH, 4);
+                LLImageDataLock lock(staging);
+                if (!staging->isBufferInvalid()) std::memset(staging->getData(), 0, size_t(TW) * TH * 4);
+                image = LLViewerTextureManager::getLocalTexture(staging.get(), false);
+            }
+            if (image.notNull() && image->getGLTexture() && mm.stride == mm.width * 4)
+            {
+                image->getGLTexture()->setSubImage(a.pixels, int(mm.width), int(mm.height), 0, 0, int(mm.width), int(mm.height), true);
+                nativeW = int(mm.width); nativeH = int(mm.height); nativeSeq = mm.sequence;
+                perfPresented++;
+                transportMs.push_back(double(a.acquired_ns - mm.produced_ns) / 1e6);
+                displayMs.push_back(double(fvft::now_ns() - mm.produced_ns) / 1e6);
+                if (transportMs.size() > 600) transportMs.pop_front();
+                if (displayMs.size() > 600) displayMs.pop_front();
+                e->nativePresented(mm);
+            }
+        }
+        return nativeW > 0 && image.notNull();
+    }
     double perfT0 = 0;
     Mode mode = Mode::Explore;
     std::vector<Hit> hits;
@@ -1494,16 +1627,20 @@ void LLFloaterFinalverseShell::draw()
     gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
     gl_rect_2d(0, H, W, 0, T.bg, true);
     const Frame* fr = v && v->frame ? v->frame.get() : nullptr;
-    if (fr && fr->rgb.size() == 1280 * 720 * 3)
+    const bool nativeImage = m->pumpNative(t);
+    if (nativeImage || (fr && fr->comps == 3 && fr->rgb.size() == size_t(fr->width) * fr->height * 3 && fr->width > 0))
     {
-        if (fr->number != m->imageFrame || m->image.isNull())
+        auto pow2 = [](int v) { int p = 1; while (p < v) p <<= 1; return p; };
+        const int fw = nativeImage ? m->nativeW : fr->width, fh = nativeImage ? m->nativeH : fr->height;
+        if (!nativeImage && (fr->number != m->imageFrame || m->image.isNull()))
         {
-            // One persistent RGB staging image; only the 1280x720 region is copied and uploaded.
-            if (m->staging.isNull())
+            // File fallback (Ω-XVIII): one persistent RGB staging image; only the 1280x720 region is copied and uploaded.
+            if (m->staging.isNull() || m->staging->getComponents() != 3)
             {
                 m->staging = new LLImageRaw(2048, 1024, 3);
                 LLImageDataLock lock(m->staging);
                 if (!m->staging->isBufferInvalid()) std::memset(m->staging->getData(), 0, 2048 * 1024 * 3);
+                m->image = nullptr;
             }
             LLPointer<LLImageRaw> raw = m->staging;
             {
@@ -1519,10 +1656,12 @@ void LLFloaterFinalverseShell::draw()
                 m->perfPresented++;
             }
         }
-        const float aspect = (float)W / std::max(1, H), imageAspect = 1280.f / 720.f;
-        float l = 0.f, r = 1280.f / 2048.f, b = 0.f, tp = 720.f / 1024.f;
+        const float aspect = (float)W / std::max(1, H), imageAspect = (float)fw / fh;
+        const float texW = nativeImage ? (float)pow2(fw) : 2048.f, texH = nativeImage ? (float)pow2(fh) : 1024.f;
+        float l = 0.f, r = fw / texW, b = 0.f, tp = fh / texH;
         if (aspect > imageAspect) { const float span = (tp - b) * imageAspect / aspect; b = (tp - span) * .5f; tp = b + span; }
         else { const float span = (r - l) * aspect / imageAspect; l = (r - span) * .5f; r = l + span; }
+        if (nativeImage) std::swap(b, tp);  // native rows are top-first: flip with texture coordinates
         gGL.color4f(1, 1, 1, 1);
         gl_draw_scaled_image(0, 0, W, H, m->image, LLColor4::white, LLRectf(l, tp, r, b));
     }
@@ -1914,6 +2053,7 @@ void LLFloaterFinalverseShell::draw()
             kv(x3, y3, "units", fr->units);
             kv(x3, y3, "triangles", std::to_string(fr->triangles));
             kv(x3, y3, "capture", fmt(fr->captureMs, 1) + " ms");
+            kv(x3, y3, "transport", fr->transport + " · " + std::to_string(fr->width) + "×" + std::to_string(fr->height));
             kv(x3, y3, "context switch", fmt(fr->switchMs, 1) + " ms");
             kv(x3, y3, "frame", std::to_string(fr->number));
             kv(x3, y3, "control seq", std::to_string(fr->controlSeq) + " / " + std::to_string(v->controlSeq));
@@ -2143,7 +2283,15 @@ void LLFloaterFinalverseShell::draw()
             if (arg != "reset")
                 LL_INFOS("FinalverseShell") << "PERF " << arg << " seconds=" << fmt(span, 2) << " viewer_fps=" << fmt(m->perfDraws / span, 1)
                                             << " storm_presented_fps=" << fmt(m->perfPresented / span, 1) << " context=" << (v ? v->ctx.label : "")
-                                            << " switch_ms=" << (fr ? fmt(fr->switchMs, 1) : std::string("-")) << " capture_ms=" << (fr ? fmt(fr->captureMs, 2) : std::string("-")) << LL_ENDL;
+                                            << " switch_ms=" << (fr ? fmt(fr->switchMs, 1) : std::string("-")) << " capture_ms=" << (fr ? fmt(fr->captureMs, 2) : std::string("-"))
+                                            << " transport=" << (fr ? fr->transport : std::string("-")) << " frame=" << (fr ? std::to_string(fr->width) + "x" + std::to_string(fr->height) : std::string("-"))
+                                            << " transport_ms_p50=" << pctl(std::vector<double>(m->transportMs.begin(), m->transportMs.end()), 50)
+                                            << " transport_ms_p95=" << pctl(std::vector<double>(m->transportMs.begin(), m->transportMs.end()), 95)
+                                            << " display_ms_p50=" << pctl(std::vector<double>(m->displayMs.begin(), m->displayMs.end()), 50)
+                                            << " display_ms_p95=" << pctl(std::vector<double>(m->displayMs.begin(), m->displayMs.end()), 95)
+                                            << " native_published=" << m->native.published() << " native_dropped=" << m->native.dropped() << LL_ENDL;
+            m->displayMs.clear();
+            m->transportMs.clear();
             m->perfDraws = m->perfPresented = 0;
             m->perfT0 = t;
         }

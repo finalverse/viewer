@@ -2,17 +2,17 @@
   "schema": "finalverse.storm-viewer-adapter-lock/1",
   "repository": "https://github.com/finalverse/storm.git",
   "accepted_main": "d611f7fbf95262dad88140460745e9faf1560e85",
-  "api": "Storm scene contexts + engineering frames (\u03a9-XVIII local candidate)",
-  "frozen_source_commit": "46ee2fae5446d633f5c26fa6fecd18acc0f984ea",
-  "source_status": "local \u03a9-XVIII candidate on feat/omega-xviii-cross-scale-20261122; not an accepted Storm release",
+  "api": "Storm scene contexts + engineering frames + native transport readback, smooth shading (\u03a9-XIX local candidate)",
+  "frozen_source_commit": "899012561ea5ce021844cc2d8ebdab7a725b665a",
+  "source_status": "local \u03a9-XIX candidate on feat/omega-xix-storm-20261123; not an accepted Storm release",
   "files": [
     {
       "path": "include/storm/render/renderer.h",
-      "sha256": "b3802ac590b9597f17d1afce36c198eef5b11f332b502169069a20788120a4c5"
+      "sha256": "eef55be7b9693830474ead755faad3e0bda86691a36264a3e221cb9db0090e9f"
     },
     {
       "path": "src/render/renderer.cpp",
-      "sha256": "85884268586d3aa09d77d5cfc658b50fd6154adb158984fdb63636465b699e24"
+      "sha256": "5f5d6be79c857b9932ca2a096dfebba5fff730a6e570fae3a6447e4c2e3ba214"
     },
     {
       "path": "include/storm/fwd_scene.h",

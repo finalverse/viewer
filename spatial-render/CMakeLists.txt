@@ -36,3 +36,9 @@ target_include_directories(finalverse-spatial-render SYSTEM PRIVATE "${STORM_SOU
 target_link_libraries(finalverse-spatial-render PRIVATE storm_fwd_scene storm_fwd_render SDL3::SDL3 OpenSSL::Crypto)
 target_compile_options(finalverse-spatial-render PRIVATE -Wall -Wextra -Wpedantic -Werror -Wno-deprecated-declarations)
 install(TARGETS finalverse-spatial-render)
+# Ω-XIX native frame transport conformance (no GPU).
+add_executable(frame_transport_test test_frame_transport.cpp)
+target_compile_options(frame_transport_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME frame_transport COMMAND frame_transport_test)
+add_executable(fvft-probe fvft_probe.cpp)
+target_compile_options(fvft-probe PRIVATE -Wall -Wextra -Wpedantic -Werror)
