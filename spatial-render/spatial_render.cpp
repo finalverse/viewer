@@ -73,7 +73,8 @@ void save(const fs::path &p, const std::string &s) {
 }
 
 struct Control {
-  std::string context, fwd, cas, definition, transition = "semantic", lighting = "daylight", target;
+  std::string context, fwd, cas, definition, transition = "semantic", lighting = "daylight", target, presentation = "realistic";
+  bool frameSelection = false;
   bool live = false, orbit = false, has_camera = false, reduced_motion = false;
   Vec center{}, extent{};
   double yaw = .6, pitch = -.45, distance = 0;
@@ -86,9 +87,15 @@ struct Control {
 Control control(const std::string &raw) {
   using namespace living;
   auto d = parse(raw);
-  keys(d, {"schema", "sequence", "context", "fwd", "cas", "definition_sha256", "focus", "transition"},
-       {"live", "camera", "highlight", "overlays", "lighting", "orbit", "target_resident", "reduced_motion"});
-  require(text(d["schema"]) == "finalverse.storm-scene-context/0.1", "context schema");
+  const std::string schema = text(d["schema"]);
+  require(schema == "finalverse.storm-scene-context/0.1" || schema == "finalverse.storm-scene-context/0.2", "context schema");
+  // 0.2 (Ω-XIX) adds presentation presets and frame-the-selection; 0.1 stays accepted.
+  if (schema.ends_with("/0.1"))
+    keys(d, {"schema", "sequence", "context", "fwd", "cas", "definition_sha256", "focus", "transition"},
+         {"live", "camera", "highlight", "overlays", "lighting", "orbit", "target_resident", "reduced_motion"});
+  else
+    keys(d, {"schema", "sequence", "context", "fwd", "cas", "definition_sha256", "focus", "transition"},
+         {"live", "camera", "highlight", "overlays", "lighting", "orbit", "target_resident", "reduced_motion", "presentation", "frame"});
   Control c;
   c.sequence = integer(d["sequence"]);
   c.context = text(d["context"]);
@@ -127,6 +134,14 @@ Control control(const std::string &raw) {
       keys(o, {"position", "radius"}, {"label"});
       c.overlays.push_back({point(o["position"], 1e9), number(o["radius"], .01, 500)});
     }
+  }
+  if (d.HasMember("presentation")) {
+    c.presentation = text(d["presentation"]);
+    require(c.presentation == "realistic" || c.presentation == "technical" || c.presentation == "inspection" || c.presentation == "xray" || c.presentation == "exploded", "presentation preset");
+  }
+  if (d.HasMember("frame")) {
+    require(text(d["frame"]) == "selection" || text(d["frame"]) == "context", "frame target");
+    c.frameSelection = text(d["frame"]) == "selection";
   }
   if (d.HasMember("target_resident") && !d["target_resident"].IsNull()) {
     c.target = text(d["target_resident"]);
@@ -314,6 +329,11 @@ int main(int argc, char **argv) {
     living::Shadows shadows(shadowSetting && std::string(shadowSetting) == "1");
     std::vector<storm::RenderObjectId> skyIds, beacons;
     storm::RenderObjectId stageId{};
+    std::map<std::string, Vec> explode;  // Ω-XIX exploded-view offsets per surface (render space)
+    std::string presentationActive = "realistic";
+    bool frameOverride = false;
+    Vec frameFocus{};
+    double frameDistance = 0;
     double stageY = 0, stageX = 0, stageZ = 0;
     std::string environmentFor;
     const bool fidelity = !(std::getenv("FINALVERSE_STORM_FIDELITY") && std::string(std::getenv("FINALVERSE_STORM_FIDELITY")) == "0");
@@ -401,6 +421,61 @@ int main(int argc, char **argv) {
             }
             const float tint[] = {.25f, .7f, 1.f};
             contexts.highlight(c.highlight, tint);
+            // Ω-XIX presentation presets (display only; authored materials are restored by
+            // highlight() above on every control change, so presets never accumulate).
+            const bool engineering = contexts.info(c.context)->axes == "x,y,z";
+            const std::string presentation = engineering ? c.presentation : "realistic";
+            explode.clear();
+            if (auto *surfaces = contexts.surfaces()) {
+              Vec lo{1e30, 1e30, 1e30}, hi{-1e30, -1e30, -1e30}, mid{};
+              std::vector<Vec> centres;
+              for (auto &sf : *surfaces) {
+                Vec a{1e30, 1e30, 1e30}, b{-1e30, -1e30, -1e30};
+                for (size_t k = 0; k + 2 < sf.mesh.positions.size(); k += 3)
+                  for (int j = 0; j < 3; j++) { a[j] = std::min(a[j], double(sf.mesh.positions[k + j])); b[j] = std::max(b[j], double(sf.mesh.positions[k + j])); }
+                Vec cc{(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2};
+                centres.push_back(cc);
+                for (int j = 0; j < 3; j++) { lo[j] = std::min(lo[j], a[j]); hi[j] = std::max(hi[j], b[j]); }
+              }
+              for (int j = 0; j < 3; j++) mid[j] = (lo[j] + hi[j]) / 2;
+              size_t si = 0;
+              for (auto &sf : *surfaces) {
+                const Vec cc = centres[si++];
+                if (presentation == "technical" && !sf.highlighted) {
+                  const float neutral[] = {.74f, .76f, .79f};
+                  renderer.set_material(sf.id, neutral, .55f, 0.f);
+                } else if (presentation == "inspection" && !sf.highlighted && !c.highlight.empty()) {
+                  const float dim[] = {.16f, .17f, .19f};
+                  renderer.set_material(sf.id, dim, .85f, 0.f);
+                }
+                renderer.set_opacity(sf.id, presentation == "xray" && !sf.highlighted ? .22f : 1.f);
+                if (presentation == "exploded") {
+                  // Separation along each part's offset from the assembly centre (render space;
+                  // parts sharing the centre, e.g. concentric rings, stay in place).
+                  Vec off{};
+                  for (int j = 0; j < 3; j++) off[j] = (cc[j] - mid[j]) * .55;
+                  explode[sf.mesh.asset_sha256 + "#" + std::to_string(si)] = off;
+                }
+              }
+              if (c.frameSelection && !c.highlight.empty()) {
+                // Frame the highlighted parts: their render-space bounds become the focus.
+                Vec a{1e30, 1e30, 1e30}, b{-1e30, -1e30, -1e30};
+                bool any = false;
+                for (auto &sf : *surfaces)
+                  if (sf.highlighted)
+                    for (size_t k = 0; k + 2 < sf.mesh.positions.size(); k += 3) {
+                      any = true;
+                      for (int j = 0; j < 3; j++) { a[j] = std::min(a[j], double(sf.mesh.positions[k + j])); b[j] = std::max(b[j], double(sf.mesh.positions[k + j])); }
+                    }
+                if (any) {
+                  // render (x, up, -north) -> declared-axis metres relative to the origin
+                  frameOverride = true;
+                  frameFocus = {(a[0] + b[0]) / 2, -(a[2] + b[2]) / 2, (a[1] + b[1]) / 2};
+                  frameDistance = std::max({b[0] - a[0], b[1] - a[1], b[2] - a[2]}) * 1.9;
+                }
+              } else frameOverride = false;
+            }
+            presentationActive = presentation;
             const std::string preset = c.lighting == "daylight" && contexts.info(c.context)->axes == "x,y,z" ? "studio" : c.lighting;
             lighting(renderer, preset);
             if (fidelity && preset != environmentFor) {
@@ -414,6 +489,10 @@ int main(int argc, char **argv) {
             double extentM = 0;
             for (auto e : c.extent) extentM = std::max(extentM, e * unit);
             desiredDistance = c.has_camera && c.distance > 0 ? c.distance : std::max(extentM * 1.7, .06);
+            if (frameOverride) {
+              desiredFocus = frameFocus;
+              if (!(c.has_camera && c.distance > 0)) desiredDistance = std::max(frameDistance, .02);
+            }
             desiredYaw = c.yaw;
             desiredPitch = c.pitch;
             if (newContext && c.transition == "semantic") {
@@ -495,9 +574,14 @@ int main(int argc, char **argv) {
       for (int j = 0; j < 3; j++) focus[j] += (targetFocus[j] - focus[j]) * ca;
       // Presentation rebasing: render space = (x, up, -north) relative to the focus.
       if (auto *surfaces = contexts.surfaces()) {
+        size_t surfaceIndex = 0;
         for (auto &s : *surfaces) {
+          ++surfaceIndex;
           Vec delta{};
           bool hidden = false;
+          Vec ex{};
+          if (!explode.empty())
+            if (auto it = explode.find(s.mesh.asset_sha256 + "#" + std::to_string(surfaceIndex)); it != explode.end()) ex = it->second;
           for (auto &[k, b] : bodies) {
             (void)k;
             if (b.sha == s.mesh.asset_sha256) {
@@ -505,7 +589,7 @@ int main(int argc, char **argv) {
               for (int j = 0; j < 3; j++) delta[j] = (b.shown[j] - b.original[j]) * unit;
             }
           }
-          const float off[] = {float(delta[0] - focus[0]), float(delta[2] - focus[2]), float(-(delta[1] - focus[1]))};
+          const float off[] = {float(delta[0] - focus[0] + ex[0]), float(delta[2] - focus[2] + ex[1]), float(-(delta[1] - focus[1]) + ex[2])};
           const float sc[] = {hidden ? 1e-6f : 1.f, hidden ? 1e-6f : 1.f, hidden ? 1e-6f : 1.f};
           renderer.set_transform(s.id, off, sc);
         }

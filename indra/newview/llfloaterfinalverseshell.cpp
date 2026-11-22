@@ -386,6 +386,7 @@ struct Model
     bool navigating = false;
     std::string navTarget, navStage;
     uint64_t controlSeq = 0;
+    std::string presentation = "realistic";  // Ω-XIX engineering presentation preset (display only)
     std::vector<std::string> history;
     size_t historyCursor = 0;
     std::string selected, selectedLabel;
@@ -687,6 +688,8 @@ struct Engine
                     auto& o = e.as_object();
                     for (auto& a : o.at("assets").as_array()) c.selectable[str(o, "entity")].push_back(std::string(a.as_string()));
                 }
+            pan[0] = pan[1] = pan[2] = 0;  // a new context starts framed on its own focus
+            frameSelection = false;
             writeContext(c, man, c.transition == "none" ? "semantic" : c.transition, {});
             currentManifest = man;
         }
@@ -719,6 +722,11 @@ struct Engine
     bj::object currentManifest;
     double camYaw = .6, camPitch = -.45, camDistance = 0;
     bool userCamera = false, orbit = false;
+    // Ω-XIX camera + presentation: pan offset (declared units, added to the focus centre),
+    // frame-the-selection and the engineering presentation preset.
+    double pan[3]{};
+    bool frameSelection = false;
+    std::string presentation = "realistic";
 
     void writeContext(const Context& c, const bj::object& man, const std::string& transition, const std::vector<std::string>& highlight)
     {
@@ -731,9 +739,9 @@ struct Engine
         if (f == fwdBySha.end() || cm == cas.end()) throw std::runtime_error("scene world definition " + wd.substr(0, 12) + " is not in the local CAS (" + label + ")");
         auto& home = man.at("camera").as_object().at("home").as_object();
         if (!userCamera) { camYaw = num(home.at("yaw")); camPitch = num(home.at("pitch")); camDistance = 0; }
-        bj::object ctl{ { "schema", "finalverse.storm-scene-context/0.1" }, { "sequence", ++model.controlSeq }, { "context", c.scene }, { "fwd", f->second },
+        bj::object ctl{ { "schema", "finalverse.storm-scene-context/0.2" }, { "sequence", ++model.controlSeq }, { "context", c.scene }, { "fwd", f->second },
                         { "cas", cm->second.objects }, { "definition_sha256", wd },
-                        { "focus", bj::object{ { "center", bj::array{ c.focus[0], c.focus[1], c.focus[2] } }, { "extent", bj::array{ c.focus[3], c.focus[4], c.focus[5] } } } },
+                        { "focus", bj::object{ { "center", bj::array{ c.focus[0] + pan[0], c.focus[1] + pan[1], c.focus[2] + pan[2] } }, { "extent", bj::array{ c.focus[3], c.focus[4], c.focus[5] } } } },
                         { "transition", reducedMotion ? "none" : transition }, { "live", man.contains("live") }, { "orbit", orbit } };
         if (reducedMotion) ctl["reduced_motion"] = true;
         bj::object cam{ { "yaw", camYaw }, { "pitch", camPitch } };
@@ -747,6 +755,8 @@ struct Engine
             for (auto& x : o->as_array())
                 ov.push_back(bj::object{ { "position", x.as_object().at("position") }, { "radius", x.as_object().contains("radius") ? x.as_object().at("radius") : bj::value(10.0) } });
         ctl["overlays"] = ov;
+        if (presentation != "realistic") ctl["presentation"] = presentation;
+        if (frameSelection && !highlight.empty()) ctl["frame"] = "selection";
         if (!writePrivate(fs::path(frames) / "context.json", bj::serialize(ctl))) throw std::runtime_error("context.json write failed");
     }
 
@@ -780,7 +790,49 @@ struct Engine
         if (auto it = model.ctx.selectable.find(model.selected); it != model.ctx.selectable.end()) hl = it->second;
         try { writeContext(model.ctx, currentManifest, "none", hl); } catch (...) {}
     }
-    void resetCamera() { userCamera = false; camDistance = 0; if (!model.ctx.scene.empty()) try { writeContext(model.ctx, currentManifest, "geometric", {}); } catch (...) {} }
+    double declaredUnit() const
+    {
+        for (auto& r : model.ctx.reps) if (r.id == model.ctx.repId && r.units == "millimetre") return .001;
+        return 1.0;
+    }
+    std::vector<std::string> selectionAssets() const
+    {
+        if (auto it = model.ctx.selectable.find(model.selected); it != model.ctx.selectable.end()) return it->second;
+        return {};
+    }
+    // Screen-plane pan (presentation only): drag pixels -> declared-unit focus offset, using the
+    // renderer's orbit convention (camera at (sin yaw, -sin pitch, cos yaw) * distance).
+    void panView(double dx, double dy)
+    {
+        if (model.ctx.scene.empty()) return;
+        userCamera = true;
+        double dist = camDistance;
+        if (dist <= 0) { double ext = 0; for (int i = 3; i < 6; ++i) ext = std::max(ext, model.ctx.focus[i]); dist = std::max(ext * declaredUnit() * 1.7, .06); }
+        const double k = dist * .0016 / declaredUnit();
+        const double cy = std::cos(camYaw), sy = std::sin(camYaw), sp = std::sin(-camPitch), cp = std::cos(camPitch);
+        // render-space right = (cos yaw, 0, -sin yaw); up ≈ (-sp*sin yaw, cp, -sp*cos yaw)
+        const double rx = cy, rz = -sy, ux = -sp * sy, uy = cp, uz = -sp * cy;
+        const double wx = -dx * k * rx + dy * k * ux, wy = dy * k * uy, wz = -dx * k * rz + dy * k * uz;
+        pan[0] += wx; pan[1] += -wz; pan[2] += wy;  // render (x, up, -north) -> declared (x, north, up)
+        frameSelection = false;
+        try { writeContext(model.ctx, currentManifest, "none", selectionAssets()); } catch (...) {}
+    }
+    void frameSelected()
+    {
+        if (model.ctx.scene.empty()) return;
+        if (selectionAssets().empty()) { toast("Select a part to frame it (Tab or the Here list)"); return; }
+        frameSelection = true;
+        camDistance = 0;
+        pan[0] = pan[1] = pan[2] = 0;
+        try { writeContext(model.ctx, currentManifest, "geometric", selectionAssets()); } catch (...) {}
+    }
+    void setPresentation(const std::string& p)
+    {
+        presentation = p;
+        model.presentation = p;
+        if (!model.ctx.scene.empty()) try { writeContext(model.ctx, currentManifest, "none", selectionAssets()); } catch (...) {}
+    }
+    void resetCamera() { userCamera = false; camDistance = 0; pan[0] = pan[1] = pan[2] = 0; frameSelection = false; if (!model.ctx.scene.empty()) try { writeContext(model.ctx, currentManifest, "geometric", {}); } catch (...) {} }
 
     void refreshHistory()
     {
@@ -1534,12 +1586,13 @@ bool LLFloaterFinalverseShell::handleHover(S32 x, S32 y, MASK mask)
     if (m->dragging && m->engine)
     {
         const S32 dx = x - m->dragX, dy = y - m->dragY;
-        if ((std::abs(dx) + std::abs(dy) > 2) && Clock::now() - m->lastCamera > std::chrono::milliseconds(40))
+        if ((std::abs(dx) + std::abs(dy) > 1) && Clock::now() - m->lastCamera > std::chrono::milliseconds(16))
         {
             m->dragX = x;
             m->dragY = y;
             m->lastCamera = Clock::now();
-            m->engine->post([e = m->engine.get(), dx, dy] { e->camera(dx * .006, dy * .004, 1.0); });
+            if (mask & (MASK_SHIFT | MASK_ALT)) m->engine->post([e = m->engine.get(), dx, dy] { e->panView(dx, dy); });  // Shift/Option-drag pans
+            else m->engine->post([e = m->engine.get(), dx, dy] { e->camera(dx * .006, dy * .004, 1.0); });
         }
         return true;
     }
@@ -1589,6 +1642,19 @@ bool LLFloaterFinalverseShell::handleKeyHere(KEY key, MASK mask)
     if (key == KEY_BACKSPACE) { e->post([e] { e->back(false); }); return true; }
     if (key == 'H') { e->post([e] { e->navigate(e->startEntity); }); return true; }
     if (key == 'R') { e->post([e] { e->resetCamera(); }); return true; }
+    if (key == 'F') { e->post([e] { e->frameSelected(); }); return true; }
+    if (key == 'V')
+    {
+        static const char* order[] = { "realistic", "technical", "inspection", "xray", "exploded" };
+        e->post([e] { int i = 0; while (i < 5 && e->presentation != order[i]) ++i; e->setPresentation(order[(i + 1) % 5]); });
+        return true;
+    }
+    if (mask == MASK_SHIFT && (key == KEY_LEFT || key == KEY_RIGHT || key == KEY_UP || key == KEY_DOWN))
+    {
+        const double dx = key == KEY_LEFT ? -40 : key == KEY_RIGHT ? 40 : 0, dy = key == KEY_UP ? 40 : key == KEY_DOWN ? -40 : 0;
+        e->post([e, dx, dy] { e->panView(dx, dy); });
+        return true;
+    }
     if (key == 'O') { e->post([e] { e->orbit = !e->orbit; e->camera(0, 0, 1.0); }); return true; }
     if (key == KEY_ESCAPE) { m->focusIndex = -1; m->showHelp = false; e->post([e] { e->select({}, {}); }); return true; }
     if (key == KEY_LEFT) { e->post([e] { e->camera(-.12, 0, 1.0); }); return true; }
@@ -2086,6 +2152,30 @@ void LLFloaterFinalverseShell::draw()
         else if (c.kind == "component") chips = { { "What is it made of?", "ask" }, { "Return to Montréal", "home" } };
         S32 cx = barL + 8;
         const S32 chipY = barT + 30;
+        // Ω-XIX presentation presets for engineering contexts (display only; V cycles, F frames).
+        if (c.domain == "engineering" && m->mode != Mode::Develop)
+        {
+            static const std::pair<const char*, const char*> presets[] = { { "realistic", "Realistic" }, { "technical", "Technical" }, { "inspection", "Inspect" },
+                                                                         { "xray", "X-Ray" }, { "exploded", "Exploded" } };
+            S32 total = 0;
+            for (auto& p : presets) total += width(p.second, 0) + 26;
+            const S32 py = chipY + 36, pl = barR - total - 8;
+            panel(pl - 6, py + 16, barR, py - 16, 16.f, true);
+            S32 px = pl;
+            for (auto& p : presets)
+            {
+                const S32 pw = width(p.second, 0) + 22;
+                LLRect rc(px, py + 12, px + pw, py - 12);
+                const bool sel = v->presentation == p.first;
+                const std::string id = std::string("preset-") + p.first;
+                if (sel) roundRect(rc.mLeft, rc.mTop, rc.mRight, rc.mBottom, 12.f, T.accentSoft);
+                if (m->focused(id)) focusRing(rc, 12);
+                text(p.second, px + 11, py - 4, sel ? T.ink : T.ink2, 0, sel);
+                m->hit(rc, [eng, k = std::string(p.first)] { eng->post([eng, k] { eng->setPresentation(k); }); }, id);
+                px += pw + 4;
+            }
+            text("Display only · F frame selection · Shift-drag pan", pl, py + 22, T.ink3, 0);
+        }
         if (m->mode != Mode::Develop)
             for (auto& ch : chips)
             {
@@ -2228,6 +2318,10 @@ void LLFloaterFinalverseShell::draw()
         else if (cmd == "home") eng->post([eng] { eng->navigate(eng->startEntity); });
         else if (cmd == "orbit") eng->post([eng] { eng->orbit = !eng->orbit; eng->camera(0, 0, 1.0); });
         else if (cmd == "zoom") eng->post([eng, z = std::atof(arg.c_str())] { eng->camera(0, 0, z); });
+        else if (cmd == "preset") eng->post([eng, arg] { eng->setPresentation(arg); });
+        else if (cmd == "frame") eng->post([eng] { eng->frameSelected(); });
+        else if (cmd == "pan") eng->post([eng, arg] { double dx = 0, dy = 0; std::istringstream(arg) >> dx >> dy; eng->panView(dx, dy); });
+        else if (cmd == "pitch") eng->post([eng, z = std::atof(arg.c_str())] { eng->camera(0, z, 1.0); });
         else if (cmd == "yaw") eng->post([eng, z = std::atof(arg.c_str())] { eng->camera(z, 0, 1.0); });
         else if (cmd == "scale") gScale = llclamp(std::atoi(arg.c_str()), 0, 2);
         else if (cmd == "help") m->showHelp = arg == "on";

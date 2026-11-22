@@ -3,16 +3,16 @@
   "repository": "https://github.com/finalverse/storm.git",
   "accepted_main": "d611f7fbf95262dad88140460745e9faf1560e85",
   "api": "Storm scene contexts + engineering frames + native transport readback, smooth shading (\u03a9-XIX local candidate)",
-  "frozen_source_commit": "34f124e231adc69aaf19ed9d7d01fa0e7050f7c7",
+  "frozen_source_commit": "92433ea2fda6648185ea9c5514a4e7e298e25063",
   "source_status": "local \u03a9-XIX candidate on feat/omega-xix-storm-20261123; not an accepted Storm release",
   "files": [
     {
       "path": "include/storm/render/renderer.h",
-      "sha256": "6f272ccfe0c1675f55370f929e65ba633247c25ff6052ff650f5f0c5a2f392b2"
+      "sha256": "04ee75afc9b7f8f211382b3992259d132c60b6e3a155177d37d7a0f1957cb4c3"
     },
     {
       "path": "src/render/renderer.cpp",
-      "sha256": "17fbf183465b1f2d94b5ac9dc10157c4d34d78418c853468551533778cb6283b"
+      "sha256": "27238816aa8055ab5fba3318ff732ca813cab1be70fff8d816ba5dfbb0df087d"
     },
     {
       "path": "include/storm/fwd_scene.h",
