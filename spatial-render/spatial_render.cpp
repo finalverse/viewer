@@ -507,6 +507,16 @@ int main(int argc, char **argv) {
           }
           if (d.HasMember("points")) r.node.points = polyline(d["points"], 4096);
           if (d.HasMember("replaces")) r.replaces = text(d["replaces"], 128);
+          if (r.node.kind == "asset") {
+            // Mode B refinement: a validated FWD + CAS; the FWD bytes must match the stated digest
+            need(d.HasMember("asset"), "asset node needs an asset object");
+            keys(d["asset"], {"fwd", "cas", "sha256"});
+            const std::string fwd = text(d["asset"]["fwd"], 1024), cas = text(d["asset"]["cas"], 1024), digest = text(d["asset"]["sha256"]);
+            need(fs::path(fwd).is_absolute() && fs::path(cas).is_absolute() && hex(digest, 64), "absolute asset paths and a digest");
+            need(sha(read(fwd, 1 << 20)) == digest, "asset FWD bytes do not match the stated digest");
+            r.node.text["fwd"] = fwd;
+            r.node.text["cas"] = cas;
+          }
           if (d.HasMember("reveal_s")) r.reveal_seconds = number(d["reveal_s"], 0, 10);
           genesis.submit(std::move(r));
         } else if (op == "footprint") {
