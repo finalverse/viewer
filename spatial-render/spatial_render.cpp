@@ -18,6 +18,9 @@
 #include "bridge.h"
 #include "frame_transport.h"
 #include "shadows.h"
+#include "styles.h"
+#include "storm/genesis/runtime.h"
+#include <deque>
 #include <SDL3/SDL.h>
 #include <openssl/sha.h>
 #include <rapidjson/stringbuffer.h>
@@ -75,6 +78,12 @@ void save(const fs::path &p, const std::string &s) {
 struct Control {
   std::string context, fwd, cas, definition, transition = "semantic", lighting = "daylight", target, presentation = "realistic";
   bool frameSelection = false;
+  // Ω-XX (context 0.3): visual style and an explicit sun (geographic contexts)
+  std::string style;
+  bool has_sun = false;
+  double sunElevation = 24, sunAzimuth = 225;
+  // Ω-XX Genesis: append-only op stream of a world being generated on top of this context
+  std::string genesisStream, genesisWorld;
   bool live = false, orbit = false, has_camera = false, reduced_motion = false;
   Vec center{}, extent{};
   double yaw = .6, pitch = -.45, distance = 0;
@@ -88,14 +97,17 @@ Control control(const std::string &raw) {
   using namespace living;
   auto d = parse(raw);
   const std::string schema = text(d["schema"]);
-  require(schema == "finalverse.storm-scene-context/0.1" || schema == "finalverse.storm-scene-context/0.2", "context schema");
+  require(schema == "finalverse.storm-scene-context/0.1" || schema == "finalverse.storm-scene-context/0.2" || schema == "finalverse.storm-scene-context/0.3", "context schema");
   // 0.2 (Ω-XIX) adds presentation presets and frame-the-selection; 0.1 stays accepted.
   if (schema.ends_with("/0.1"))
     keys(d, {"schema", "sequence", "context", "fwd", "cas", "definition_sha256", "focus", "transition"},
          {"live", "camera", "highlight", "overlays", "lighting", "orbit", "target_resident", "reduced_motion"});
-  else
+  else if (schema.ends_with("/0.2"))
     keys(d, {"schema", "sequence", "context", "fwd", "cas", "definition_sha256", "focus", "transition"},
          {"live", "camera", "highlight", "overlays", "lighting", "orbit", "target_resident", "reduced_motion", "presentation", "frame"});
+  else  // 0.3 (Ω-XX) adds the visual style and an explicit sun
+    keys(d, {"schema", "sequence", "context", "fwd", "cas", "definition_sha256", "focus", "transition"},
+         {"live", "camera", "highlight", "overlays", "lighting", "orbit", "target_resident", "reduced_motion", "presentation", "frame", "style", "sun", "genesis"});
   Control c;
   c.sequence = integer(d["sequence"]);
   c.context = text(d["context"]);
@@ -142,6 +154,23 @@ Control control(const std::string &raw) {
   if (d.HasMember("frame")) {
     require(text(d["frame"]) == "selection" || text(d["frame"]) == "context", "frame target");
     c.frameSelection = text(d["frame"]) == "selection";
+  }
+  if (d.HasMember("style")) {
+    c.style = text(d["style"], 32);
+    require(living::style_for(c.style, false).known, "visual style");
+  }
+  if (d.HasMember("sun")) {
+    keys(d["sun"], {"elevation_deg", "azimuth_deg"});
+    c.sunElevation = number(d["sun"]["elevation_deg"], -90, 90);
+    c.sunAzimuth = number(d["sun"]["azimuth_deg"], -360, 720);
+    c.has_sun = true;
+  }
+  if (d.HasMember("genesis")) {
+    keys(d["genesis"], {"stream", "world"});
+    c.genesisStream = text(d["genesis"]["stream"], 1024);
+    c.genesisWorld = text(d["genesis"]["world"]);
+    require(fs::path(c.genesisStream).is_absolute(), "absolute Genesis stream path");
+    require(uuid(c.genesisWorld), "Genesis world must be a UUID");
   }
   if (d.HasMember("target_resident") && !d["target_resident"].IsNull()) {
     c.target = text(d["target_resident"]);
@@ -242,8 +271,10 @@ storm::RenderObjectId stage(storm::Renderer &r, double radius) {
     v.insert(v.end(), {float(radius * std::cos(a)), 0.f, float(radius * std::sin(a))});
   }
   for (unsigned i = 1; i <= seg; i++) idx.insert(idx.end(), {0u, i + 1, i});
-  const float colour[] = {.045f, .048f, .056f};
-  return r.add_surface(v.data(), v.size() / 3, idx.data(), idx.size(), colour, false, .62f, 0);
+  // Ω-XX: a darker, semi-polished stage so the HDR softbox reflections and the contact
+  // shadow ground the model (presentation only)
+  const float colour[] = {.022f, .024f, .03f};
+  return r.add_surface(v.data(), v.size() / 3, idx.data(), idx.size(), colour, false, r.cinematic() ? .32f : .62f, 0);
 }
 
 // A presentation-only beacon (ring + pillar) for an overlay marker, render-space metres.
@@ -269,6 +300,37 @@ storm::RenderObjectId beacon(storm::Renderer &r, double radius) {
 }
 
 double geographic_far(const std::string &axes) { return axes == "x,y,z" ? 50.0 : 6000.0; }
+
+// ---------------------------------------------------------------- Ω-XX Genesis ops
+// finalverse.genesis-op/1: one JSON object per line, append-only, written by the Genesis
+// service into a private file named by the Viewer's context control. Every op is validated
+// here; a refused op is counted and reported, never partially applied.
+struct GenesisFeed {
+  std::string path, world;
+  uint64_t offset = 0, seq = 0, applied = 0, refused = 0;
+  std::string partial, lastError, title, style;
+  Vec anchor{};  // world origin, context declared units
+  bool haveWorld = false;
+};
+
+std::array<double, 3> triple(const rapidjson::Value &v, double bound) {
+  living::require(v.IsArray() && v.Size() == 3, "3-vector");
+  std::array<double, 3> o{};
+  for (int i = 0; i < 3; i++) { living::require(v[i].IsNumber() && std::isfinite(v[i].GetDouble()) && std::abs(v[i].GetDouble()) <= bound, "finite bounded number"); o[i] = v[i].GetDouble(); }
+  return o;
+}
+
+std::vector<std::array<double, 2>> polyline(const rapidjson::Value &v, size_t max) {
+  living::require(v.IsArray() && v.Size() <= max, "point list");
+  std::vector<std::array<double, 2>> out;
+  for (auto &p : v.GetArray()) {
+    living::require(p.IsArray() && p.Size() == 2 && p[0].IsNumber() && p[1].IsNumber(), "2D point");
+    const double x = p[0].GetDouble(), z = p[1].GetDouble();
+    living::require(std::isfinite(x) && std::isfinite(z) && std::abs(x) < 1e5 && std::abs(z) < 1e5, "finite point");
+    out.push_back({x, z});
+  }
+  return out;
+}
 
 volatile std::sig_atomic_t gStop = 0;
 void on_signal(int) { gStop = 1; }
@@ -307,6 +369,16 @@ int main(int argc, char **argv) {
     cfg.capture_width = captureW;
     cfg.capture_height = captureH;
     cfg.capture_samples = uint8_t(msaa);
+    // Ω-XX Visual Renaissance: Storm's cinematic HDR pipeline is the default presentation;
+    // FINALVERSE_STORM_CINEMATIC=0 keeps the Ω-XIX direct path for comparison.
+    const char *cinematicSetting = std::getenv("FINALVERSE_STORM_CINEMATIC");
+    const bool cinematic = !(cinematicSetting && std::string(cinematicSetting) == "0");
+    const char *shadowEnv = std::getenv("FINALVERSE_STORM_SHADOWS");
+    const bool wantShadows = shadowEnv && std::string(shadowEnv) == "1";
+    cfg.cinematic = cinematic;
+    cfg.shadows = cinematic && wantShadows;
+    const std::string defaultStyle = std::getenv("FINALVERSE_STORM_STYLE") ? std::getenv("FINALVERSE_STORM_STYLE") : "cinematic";
+    need(living::style_for(defaultStyle, false).known, "FINALVERSE_STORM_STYLE names an unknown style");
     const bool hidden = std::string(argv[4]) == "hidden";
     if (hidden) cfg.vsync = false;  // nothing is presented on screen; pacing is the loop's own
     storm::Renderer renderer;
@@ -325,8 +397,97 @@ int main(int argc, char **argv) {
       save(out / "transport.json", transport.discovery());
     }
     storm::SceneContexts contexts(renderer);
-    const char *shadowSetting = std::getenv("FINALVERSE_STORM_SHADOWS");
-    living::Shadows shadows(shadowSetting && std::string(shadowSetting) == "1");
+    // Ω-XX Genesis runtime: worker-thread generation, frame-budgeted uploads, materialisation
+    std::string previousControl, previousUpdate, updateHash, sync = "none", lastError;
+    storm::genesis::Runtime genesis(renderer);
+    GenesisFeed feed;
+    std::deque<double> frameMs;
+    double lastStatus = -1;
+    std::string genesisStyle;
+    bool genesisSun = false;
+    double genesisSunEl = 24, genesisSunAz = 225;
+    const double genesisBudget = std::getenv("FINALVERSE_GENESIS_BUDGET_MS") ? std::atof(std::getenv("FINALVERSE_GENESIS_BUDGET_MS")) : 4.0;
+    need(genesisBudget >= .5 && genesisBudget <= 50, "FINALVERSE_GENESIS_BUDGET_MS in [0.5, 50]");
+    auto applyGenesis = [&](const std::string &line) {
+      using namespace living;
+      rapidjson::Document d;
+      d.Parse(line.data(), line.size());
+      need(!d.HasParseError() && d.IsObject(), "Genesis op is not a JSON object");
+      need(d.HasMember("op") && d["op"].IsString() && d.HasMember("seq") && d["seq"].IsUint64(), "Genesis op needs op and seq");
+      const uint64_t seq = d["seq"].GetUint64();
+      need(seq > feed.seq, "Genesis seq must increase");
+      const std::string op = d["op"].GetString();
+      if (op == "world") {
+        need(d.HasMember("world") && d["world"].IsString() && feed.world == d["world"].GetString(), "Genesis world does not match the context");
+        feed.anchor = triple(d["anchor"], 1e7);
+        if (d.HasMember("title")) feed.title = text(d["title"], 160);
+        if (d.HasMember("style")) { genesisStyle = text(d["style"], 32); need(living::style_for(genesisStyle, false).known, "Genesis style"); previousControl.clear(); }
+        feed.haveWorld = true;
+      } else {
+        need(feed.haveWorld, "Genesis: world op first");
+        if (op == "node") {
+          storm::genesis::Request r;
+          r.node.id = text(d["id"], 128);
+          r.node.kind = text(d["kind"], 32);
+          const auto &k = storm::genesis::kinds();
+          need(std::find(k.begin(), k.end(), r.node.kind) != k.end(), "Genesis node kind");
+          if (d.HasMember("seed")) { need(d["seed"].IsUint64(), "seed"); r.node.seed = d["seed"].GetUint64(); }
+          if (d.HasMember("priority")) r.priority = int(number(d["priority"], 0, 5));
+          if (d.HasMember("at")) r.at.position = triple(d["at"], 1e5);
+          if (d.HasMember("yaw_deg")) r.at.yaw = number(d["yaw_deg"], -720, 720) * M_PI / 180;
+          if (d.HasMember("on_ground")) { need(d["on_ground"].IsBool(), "on_ground"); r.at.on_ground = d["on_ground"].GetBool(); }
+          if (d.HasMember("num")) {
+            need(d["num"].IsObject() && d["num"].MemberCount() <= 64, "num object");
+            for (auto &m : d["num"].GetObject()) { need(m.value.IsNumber() && std::isfinite(m.value.GetDouble()), "numeric parameter"); r.node.num[m.name.GetString()] = m.value.GetDouble(); }
+          }
+          if (d.HasMember("text")) {
+            need(d["text"].IsObject() && d["text"].MemberCount() <= 16, "text object");
+            for (auto &m : d["text"].GetObject()) r.node.text[m.name.GetString()] = text(m.value, 32);
+          }
+          if (d.HasMember("points")) r.node.points = polyline(d["points"], 4096);
+          if (d.HasMember("replaces")) r.replaces = text(d["replaces"], 128);
+          if (d.HasMember("reveal_s")) r.reveal_seconds = number(d["reveal_s"], 0, 10);
+          genesis.submit(std::move(r));
+        } else if (op == "footprint") {
+          storm::genesis::Placement at;
+          at.position = triple(d["at"], 1e5);
+          std::array<float, 3> glow{.25f, .75f, 1.f};
+          if (d.HasMember("glow")) { auto g = triple(d["glow"], 16); glow = {float(g[0]), float(g[1]), float(g[2])}; }
+          genesis.footprint(text(d["id"], 128), at, number(d["w"], .5, 2000), number(d["d"], .5, 2000), number(d["h"], .1, 500),
+                            d.HasMember("yaw_deg") ? number(d["yaw_deg"], -720, 720) * M_PI / 180 : 0, glow);
+        } else if (op == "move") {
+          storm::genesis::Mover m;
+          m.id = text(d["id"], 128);
+          m.path = polyline(d["path"], 4096);
+          need(m.path.size() >= 2, "mover path needs 2 points");
+          if (d.HasMember("speed")) m.speed = number(d["speed"], 0, 60);
+          if (d.HasMember("phase")) m.phase = number(d["phase"], 0, 1e6);
+          if (d.HasMember("loop")) { need(d["loop"].IsBool(), "loop"); m.loop = d["loop"].GetBool(); }
+          genesis.move(std::move(m));
+        } else if (op == "remove") {
+          genesis.remove(text(d["id"], 128));
+        } else if (op == "style") {
+          genesisStyle = text(d["style"], 32);
+          need(living::style_for(genesisStyle, false).known, "Genesis style");
+          if (d.HasMember("sun")) {
+            keys(d["sun"], {"elevation_deg", "azimuth_deg"});
+            genesisSunEl = number(d["sun"]["elevation_deg"], -90, 90);
+            genesisSunAz = number(d["sun"]["azimuth_deg"], -360, 720);
+            genesisSun = true;
+          }
+          previousControl.clear();  // re-derive the presentation from the active control
+        } else if (op == "clear") {
+          genesis.clear();
+        } else if (op == "phase") {
+          // progress marker for the Viewer; the renderer only counts it
+        } else {
+          throw std::runtime_error("unknown Genesis op " + op);
+        }
+      }
+      feed.seq = seq;
+    };
+    living::Shadows shadows(!cinematic && wantShadows);  // cinematic: Storm configures its own shadow pass
+    std::string lookFor;  // style|sun|context the presentation was last derived for
     std::vector<storm::RenderObjectId> skyIds, beacons;
     storm::RenderObjectId stageId{};
     std::map<std::string, Vec> explode;  // Ω-XIX exploded-view offsets per surface (render space)
@@ -342,7 +503,6 @@ int main(int argc, char **argv) {
     bool haveContext = false;
     std::map<std::string, Body> bodies;
     living::Gate gate;
-    std::string previousControl, previousUpdate, updateHash, sync = "none", lastError;
     uint64_t sourceRevision = 0, captures = 0, switches = 0, refusals = 0;
     double yaw = .6, pitch = -.45, distance = 50, transitionStart = 0;
     Vec focus{}, origin{};
@@ -385,10 +545,11 @@ int main(int argc, char **argv) {
               unit = info->unit_to_metre;
               origin = info->origin;
               const bool geographic = info->axes != "x,y,z";
-              if (geographic) skyIds = sky(renderer);
-              else if (fidelity) {
+              if (geographic && !cinematic) skyIds = sky(renderer);
+              else if (!geographic && fidelity) {
                 // Ω-XIX: studio dome + stage under the model, framed from its declared bounds.
-                skyIds = studio_dome(renderer);
+                // Ω-XX cinematic: the compose pass draws the cyclorama, so no dome geometry.
+                if (!cinematic) skyIds = studio_dome(renderer);
                 double span = 0;
                 for (int k = 0; k < 2; k++) span = std::max(span, (info->maximum[k] - info->minimum[k]) * unit);
                 stageId = stage(renderer, std::max(span * 1.6, .02));
@@ -478,7 +639,46 @@ int main(int argc, char **argv) {
             presentationActive = presentation;
             const std::string preset = c.lighting == "daylight" && contexts.info(c.context)->axes == "x,y,z" ? "studio" : c.lighting;
             lighting(renderer, preset);
-            if (fidelity && preset != environmentFor) {
+            if (cinematic) {
+              // Ω-XX: style -> presentation; geographic contexts get a physical sun, sky,
+              // aerial perspective and image-based lighting from the same atmosphere.
+              const bool eng = contexts.info(c.context)->axes == "x,y,z";
+              const std::string styleName = !genesisStyle.empty() && c.genesisStream == feed.path ? genesisStyle : c.style.empty() ? defaultStyle : c.style;
+              auto st = living::style_for(styleName, eng);
+              if (c.lighting == "sunset" && !c.has_sun) st.sun_elevation_deg = 3.5;
+              if (c.has_sun) { st.sun_elevation_deg = c.sunElevation; st.sun_azimuth_deg = c.sunAzimuth; }
+              if (genesisSun && !genesisStyle.empty()) { st.sun_elevation_deg = genesisSunEl; st.sun_azimuth_deg = genesisSunAz; }
+              // eye adaptation for low sun: twilight scenes are shown about 1.4 EV brighter
+              // (a fixed curve on the sun elevation, documented; not a metered auto-exposure)
+              if (!eng) st.look.exposure_ev += float(std::clamp((12.0 - st.sun_elevation_deg) / 16.0, 0.0, 1.0) * 1.4);
+              need(renderer.set_presentation(st.look), renderer.error());
+              const std::string key = styleName + "|" + std::to_string(st.sun_elevation_deg) + "|" + std::to_string(st.sun_azimuth_deg) + "|" + c.context;
+              if (eng) {
+                // HDR studio: a dimmer fill so the cyclorama, the stage and the reflections of
+                // the softboxes carry the form (the Ω-XIX values were tuned for an LDR target)
+                const float key[] = {-.45f, -.8f, -.4f}, keyC[] = {1.f, .97f, .93f}, amb[] = {.16f, .17f, .19f};
+                renderer.set_sun_direction(key);
+                renderer.set_sun_colour(keyC);
+                renderer.set_sun_intensity(2.6f * st.key_intensity);
+                renderer.set_ambient(amb);
+              }
+              if (!eng) {
+                float travel[3];
+                living::sun_vector(st.sun_elevation_deg, st.sun_azimuth_deg, travel);
+                renderer.set_sun_direction(travel);
+                const double centre[3] = {0, -6371000.0, 0};
+                renderer.set_planet_frame(centre, 6371.0, .001);
+                renderer.apply_atmospheric_lighting(st.key_intensity);
+                if (key != lookFor) {
+                  const auto e0 = Clock::now();
+                  const bool ok = renderer.set_environment_from_atmosphere();
+                  std::cerr << "FINALVERSE spatial render: atmosphere environment " << (ok ? "ready in " + std::to_string(std::chrono::duration<double, std::milli>(Clock::now() - e0).count()) + " ms" : renderer.error()) << "\n";
+                  environmentFor = "atmosphere";
+                }
+              }
+              lookFor = key;
+            }
+            if (fidelity && preset != environmentFor && !(cinematic && contexts.info(c.context)->axes != "x,y,z")) {
               const auto e0 = Clock::now();
               const bool ok = renderer.set_environment(preset == "studio" ? storm::Renderer::Environment::Studio : preset == "sunset" ? storm::Renderer::Environment::Sunset : storm::Renderer::Environment::Daylight);
               std::cerr << "FINALVERSE spatial render: environment " << preset << (ok ? " ready in " : " refused: ") << (ok ? std::to_string(std::chrono::duration<double, std::milli>(Clock::now() - e0).count()) + " ms" : renderer.error()) << "\n";
@@ -512,6 +712,14 @@ int main(int argc, char **argv) {
               yaw = desiredYaw;
             }
             renderer.set_clip_distances(float(std::max(desiredDistance / 4000., .0004)), float(std::max(desiredDistance * 60., fidelity ? 3200. : geographic_far(contexts.info(c.context)->axes))));
+            if (c.genesisStream != feed.path || c.genesisWorld != feed.world) {
+              genesis.clear();
+              feed = GenesisFeed{};
+              feed.path = c.genesisStream;
+              feed.world = c.genesisWorld;
+              genesisStyle.clear();
+              genesisSun = false;
+            }
             active = c;
             haveContext = true;
             lastError.clear();
@@ -520,6 +728,38 @@ int main(int argc, char **argv) {
       } catch (const std::exception &e) {
         refusals++;
         lastError = e.what();
+      }
+      // ---------------------------------------------------------- Ω-XX Genesis stream
+      if (haveContext && !feed.path.empty()) {
+        try {
+          struct stat st{};
+          if (::stat(feed.path.c_str(), &st) == 0) {
+            need(S_ISREG(st.st_mode) && st.st_uid == getuid() && (st.st_mode & 077) == 0, "private same-user Genesis stream");
+            need(uint64_t(st.st_size) <= (64ull << 20), "Genesis stream larger than 64 MiB");
+            if (uint64_t(st.st_size) > feed.offset) {
+              std::ifstream f(feed.path, std::ios::binary);
+              f.seekg(std::streamoff(feed.offset));
+              const size_t n = size_t(std::min<uint64_t>(uint64_t(st.st_size) - feed.offset, 1u << 20));
+              std::string chunk(n, '\0');
+              f.read(chunk.data(), std::streamsize(n));
+              chunk.resize(size_t(f.gcount()));
+              feed.offset += chunk.size();
+              feed.partial += chunk;
+              size_t nl;
+              while ((nl = feed.partial.find('\n')) != std::string::npos) {
+                const std::string line = feed.partial.substr(0, nl);
+                feed.partial.erase(0, nl + 1);
+                if (line.empty()) continue;
+                try { applyGenesis(line); feed.applied++; }
+                catch (const std::exception &e) { feed.refused++; feed.lastError = e.what(); }
+              }
+              need(feed.partial.size() < 65536, "Genesis op line longer than 64 KiB");
+            }
+          }
+        } catch (const std::exception &e) {
+          feed.refused++;
+          feed.lastError = e.what();
+        }
       }
       // ---------------------------------------------------------- live residents (city context)
       if (haveContext && active.live && !region.empty()) {
@@ -606,7 +846,19 @@ int main(int argc, char **argv) {
         const float one[] = {1, 1, 1};
         renderer.set_transform(stageId, off, one);
       }
+      if (cinematic && haveContext && contexts.info(active.context) && contexts.info(active.context)->axes != "x,y,z") {
+        // the context origin sits at (-focus) in render space; the planet centre is one
+        // Earth radius below it (local tangent-plane approximation of the city context)
+        const double centre[3] = {-focus[0], -focus[2] - 6371000.0, focus[1]};
+        renderer.set_planet_frame(centre, 6371.0, .001);
+      }
       renderer.set_camera_orbit(float(yaw), float(pitch), float(distance));
+      if (haveContext && feed.haveWorld) {
+        const std::array<double, 3> anchor{(feed.anchor[0] - origin[0]) * unit - focus[0], (feed.anchor[2] - origin[2]) * unit - focus[2],
+                                           -((feed.anchor[1] - origin[1]) * unit - focus[1])};
+        const std::array<double, 3> cam{distance * std::cos(pitch) * std::sin(yaw), distance * std::sin(-pitch), distance * std::cos(pitch) * std::cos(yaw)};
+        genesis.update(dt, anchor, cam, genesisBudget);
+      }
       need(renderer.render_frame(dt), renderer.error());
       shadows.after_first_frame();
       // ---------------------------------------------------------- capture
@@ -687,6 +939,51 @@ int main(int argc, char **argv) {
         save(out / "frame.json", {buf.GetString(), buf.GetSize()});
         if (!useShm) captures++;
         }
+      }
+      frameMs.push_back(std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
+      if (frameMs.size() > 240) frameMs.pop_front();
+      if (!feed.path.empty() && now - lastStatus > .25) {
+        lastStatus = now;
+        std::vector<double> sorted(frameMs.begin(), frameMs.end());
+        std::sort(sorted.begin(), sorted.end());
+        auto pct = [&](double q) { return sorted.empty() ? 0.0 : sorted[std::min(sorted.size() - 1, size_t(q * double(sorted.size())))]; };
+        const auto gs = genesis.stats();
+        std::map<std::string, int> byKind;
+        for (auto &[id, kind] : genesis.resident()) { (void)id; byKind[kind]++; }
+        rapidjson::StringBuffer buf;
+        Writer w(buf);
+        w.StartObject();
+        str(w, "schema", "finalverse.genesis-render-status/1");
+        str(w, "world", feed.world);
+        str(w, "title", feed.title);
+        str(w, "style", genesisStyle);
+        w.Key("seq"); w.Uint64(feed.seq);
+        w.Key("applied"); w.Uint64(feed.applied);
+        w.Key("refused"); w.Uint64(feed.refused + gs.refused);
+        str(w, "last_error", !feed.lastError.empty() ? feed.lastError : gs.last_error);
+        w.Key("queued"); w.Uint64(gs.queued);
+        w.Key("ready"); w.Uint64(gs.ready);
+        w.Key("generated"); w.Uint64(gs.generated);
+        w.Key("uploaded"); w.Uint64(gs.uploaded);
+        w.Key("revealing"); w.Uint64(gs.revealing);
+        w.Key("objects"); w.Uint64(gs.objects);
+        w.Key("triangles"); w.Uint64(gs.triangles);
+        w.Key("generate_ms_last"); w.Double(gs.last_generate_ms);
+        w.Key("generate_ms_max"); w.Double(gs.max_generate_ms);
+        w.Key("upload_ms_last"); w.Double(gs.last_upload_ms);
+        w.Key("upload_ms_max"); w.Double(gs.max_upload_ms);
+        w.Key("budget_ms"); w.Double(gs.budget_ms);
+        w.Key("budget_overruns"); w.Uint64(gs.budget_overruns);
+        w.Key("frame_ms_p50"); w.Double(pct(.5));
+        w.Key("frame_ms_p95"); w.Double(pct(.95));
+        w.Key("frame_ms_max"); w.Double(sorted.empty() ? 0 : sorted.back());
+        w.Key("resident");
+        w.StartObject();
+        for (auto &[k, v] : byKind) { w.Key(k.c_str()); w.Int(v); }
+        w.EndObject();
+        w.Key("presentation_only"); w.Bool(true);
+        w.EndObject();
+        try { save(out / "genesis-status.json", {buf.GetString(), buf.GetSize()}); } catch (const std::exception &) {}
       }
       std::this_thread::sleep_until(t0 + std::chrono::nanoseconds(16666667));
     }

@@ -42,3 +42,6 @@ target_compile_options(frame_transport_test PRIVATE -Wall -Wextra -Wpedantic -We
 add_test(NAME frame_transport COMMAND frame_transport_test)
 add_executable(fvft-probe fvft_probe.cpp)
 target_compile_options(fvft-probe PRIVATE -Wall -Wextra -Wpedantic -Werror)
+# Ω-XX visual quality gates: read-only capture of the published frame.
+add_executable(fvft-grab fvft_grab.cpp)
+target_compile_options(fvft-grab PRIVATE -Wall -Wextra -Wpedantic -Werror)
