@@ -22,6 +22,7 @@ public:
     bool handleDoubleClick(S32 x, S32 y, MASK mask) override;
     bool handleScrollWheel(S32 x, S32 y, S32 clicks) override;
     bool handleKeyHere(KEY key, MASK mask) override;
+    bool handleUnicodeCharHere(llwchar uni_char) override;
 
     struct Impl;
 
