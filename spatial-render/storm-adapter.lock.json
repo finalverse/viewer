@@ -3,7 +3,7 @@
   "repository": "https://github.com/finalverse/storm.git",
   "accepted_main": "d611f7fbf95262dad88140460745e9faf1560e85",
   "api": "Storm scene contexts, native transport readback, smooth shading, cinematic HDR presentation, Genesis procedural runtime (\u03a9-XX local candidate)",
-  "frozen_source_commit": "cdedc93f2f870c0ce03356510c70a4ce39ea884f",
+  "frozen_source_commit": "ab9ca970d3f66117601b75425dc7b29f2a0a9b0e",
   "source_status": "local \u03a9-XX candidate on feat/omega-xx-storm-20261124; not an accepted Storm release",
   "files": [
     {
@@ -12,7 +12,7 @@
     },
     {
       "path": "src/render/renderer.cpp",
-      "sha256": "4abecd176526e7b667e310736e3ec0281d586a390530f95ee29b2f7d25915928"
+      "sha256": "e3bf013b92d443541330fb861875ca0b137e35d22af940c00417b20232b18387"
     },
     {
       "path": "include/storm/fwd_scene.h",
@@ -60,19 +60,19 @@
     },
     {
       "path": "include/storm/genesis/procedural.h",
-      "sha256": "536cd090f86007716b09a724d70dc04e7eed998de4115ea8aaed69edb2e69db9"
+      "sha256": "10c45164f9213567bea4011446a41defcbd686fda291c7fa013b0bde95d28f1b"
     },
     {
       "path": "src/genesis/procedural.cpp",
-      "sha256": "3422d1ac09dc18063ea691e4b44cc697bd266141ba6ca36ebdd96dbd70344783"
+      "sha256": "d5e23952c622784ec961b09776e90e1fcd01cb51b2a6977702733f659aa28f46"
     },
     {
       "path": "include/storm/genesis/runtime.h",
-      "sha256": "100c5f93660e00cedca58a1d667082f28660928f6f3a84c4dff728e95cdec4db"
+      "sha256": "cae3b2515f2856d2390989e50d6405dce08e69aa88d67512c55c61e523007653"
     },
     {
       "path": "src/genesis/runtime.cpp",
-      "sha256": "2756f736cedeabeb1fe5f5b5e9f1320b565a8b782d2a3e69b5bb1c95e0aca8f4"
+      "sha256": "dcf9ac36ab7f5814f6cdc9ece67fab63040af25d09393475033625226a2dfe75"
     }
   ],
   "ogre_archives": [

@@ -20,6 +20,7 @@
 #include "shadows.h"
 #include "styles.h"
 #include "storm/genesis/runtime.h"
+#include "native_contexts.h"
 #include <deque>
 #include <SDL3/SDL.h>
 #include <openssl/sha.h>
@@ -84,6 +85,12 @@ struct Control {
   double sunElevation = 24, sunAzimuth = 225;
   // Ω-XX Genesis: append-only op stream of a world being generated on top of this context
   std::string genesisStream, genesisWorld;
+  // Ω-XX native contexts (no FWD): "astronomical" | "scientific"; empty = FWD context
+  std::string kind;
+  living::AstroParams astro;
+  living::ScienceParams science;
+  std::string nativeKey;
+  bool native() const { return !kind.empty() && kind != "fwd"; }
   bool live = false, orbit = false, has_camera = false, reduced_motion = false;
   Vec center{}, extent{};
   double yaw = .6, pitch = -.45, distance = 0;
@@ -98,6 +105,55 @@ Control control(const std::string &raw) {
   auto d = parse(raw);
   const std::string schema = text(d["schema"]);
   require(schema == "finalverse.storm-scene-context/0.1" || schema == "finalverse.storm-scene-context/0.2" || schema == "finalverse.storm-scene-context/0.3", "context schema");
+  {
+  Control c;
+  if (schema.ends_with("/0.3") && d.HasMember("kind") && text(d["kind"]) != "fwd") {
+    // Ω-XX native context: astronomical or scientific, built by the renderer from an
+    // identified model (no FWD, no CAS). Same sequence/context/transition semantics.
+    keys(d, {"schema", "sequence", "context", "kind", "transition"}, {"camera", "style", "sun", "astronomical", "scientific", "reduced_motion"});
+    c.sequence = integer(d["sequence"]);
+    c.context = text(d["context"]);
+    require(uuid(c.context), "context must be a UUID");
+    c.kind = text(d["kind"]);
+    c.transition = text(d["transition"]);
+    require(c.transition == "semantic" || c.transition == "geometric" || c.transition == "none", "transition kind");
+    if (d.HasMember("reduced_motion")) { require(d["reduced_motion"].IsBool(), "reduced_motion boolean"); c.reduced_motion = d["reduced_motion"].GetBool(); }
+    if (d.HasMember("style")) { c.style = text(d["style"], 32); require(living::style_for(c.style, false).known, "visual style"); }
+    if (c.kind == "astronomical") {
+      require(d.HasMember("astronomical"), "astronomical parameters");
+      const auto &a = d["astronomical"];
+      keys(a, {"time_unix"}, {"time_scale", "distance_km", "yaw", "pitch", "descend", "lat", "lon"});
+      c.astro.unix0 = number(a["time_unix"], 0, 1e11);
+      if (a.HasMember("time_scale")) c.astro.scale = number(a["time_scale"], 0, 1e7);
+      if (a.HasMember("distance_km")) c.astro.distance_km = number(a["distance_km"], 7000, 2e6);
+      if (a.HasMember("yaw")) c.astro.yaw = number(a["yaw"], -100, 100);
+      if (a.HasMember("pitch")) c.astro.pitch = number(a["pitch"], -1.5, 1.5);
+      if (a.HasMember("descend")) { require(a["descend"].IsBool(), "descend boolean"); c.astro.descend = a["descend"].GetBool(); }
+      if (a.HasMember("lat")) c.astro.lat = number(a["lat"], -90, 90);
+      if (a.HasMember("lon")) c.astro.lon = number(a["lon"], -180, 180);
+      c.nativeKey = "astro|" + std::to_string(c.astro.unix0) + "|" + std::to_string(c.astro.scale) + "|" + (c.astro.descend ? "d" : "o");
+    } else if (c.kind == "scientific") {
+      require(d.HasMember("scientific"), "scientific parameters");
+      const auto &sc = d["scientific"];
+      keys(sc, {"model"}, {"cells", "lattice_a_angstrom"});
+      c.science.model = text(sc["model"], 32);
+      require(c.science.model == "bcc-iron" || c.science.model == "microstructure", "scientific model");
+      if (sc.HasMember("cells")) c.science.cells = int(number(sc["cells"], 1, 8));
+      if (sc.HasMember("lattice_a_angstrom")) c.science.a = number(sc["lattice_a_angstrom"], 1, 20);
+      c.nativeKey = "science|" + c.science.model + "|" + std::to_string(c.science.cells) + "|" + std::to_string(c.science.a);
+    } else {
+      throw std::runtime_error("context kind must be fwd, astronomical or scientific");
+    }
+    if (d.HasMember("camera")) {
+      keys(d["camera"], {"yaw", "pitch"}, {"distance_m"});
+      c.yaw = number(d["camera"]["yaw"], -100, 100);
+      c.pitch = number(d["camera"]["pitch"], -1.5, 1.5);
+      if (d["camera"].HasMember("distance_m")) c.distance = number(d["camera"]["distance_m"], 1e-9, 5000);
+      c.has_camera = true;
+    }
+    return c;
+  }
+  }
   // 0.2 (Ω-XIX) adds presentation presets and frame-the-selection; 0.1 stays accepted.
   if (schema.ends_with("/0.1"))
     keys(d, {"schema", "sequence", "context", "fwd", "cas", "definition_sha256", "focus", "transition"},
@@ -400,6 +456,11 @@ int main(int argc, char **argv) {
     // Ω-XX Genesis runtime: worker-thread generation, frame-budgeted uploads, materialisation
     std::string previousControl, previousUpdate, updateHash, sync = "none", lastError;
     storm::genesis::Runtime genesis(renderer);
+    living::NativeScene native;  // Ω-XX astronomical / scientific contexts
+    bool nativeActive = false;
+    std::string nativeKey;
+    std::array<double, 3> nativeFocus{};
+    const std::string earthTexture = std::getenv("FINALVERSE_EARTH_TEXTURE") ? std::getenv("FINALVERSE_EARTH_TEXTURE") : "";
     GenesisFeed feed;
     std::deque<double> frameMs;
     double lastStatus = -1;
@@ -530,6 +591,60 @@ int main(int argc, char **argv) {
           if (raw != previousControl) {
             previousControl = raw;
             Control c = control(raw);
+            if (c.native()) {
+              const double nowS = std::chrono::duration<double>(Clock::now() - started).count();
+              if (!nativeActive || c.nativeKey != nativeKey || c.context != active.context) {
+                const auto s0 = Clock::now();
+                contexts.release();
+                for (auto id : skyIds) renderer.remove_object(id);
+                skyIds.clear();
+                if (!(stageId == storm::RenderObjectId{})) { renderer.remove_object(stageId); stageId = {}; }
+                for (auto id : beacons) renderer.remove_object(id);
+                beacons.clear(); beaconPositions.clear(); bodies.clear(); explode.clear(); frameOverride = false;
+                feed = GenesisFeed{}; genesisStyle.clear(); genesisSun = false;
+                if (c.kind == "astronomical") native.start_astro(genesis, c.astro, earthTexture, nowS);
+                else native.start_science(genesis, c.science);
+                nativeKey = c.nativeKey;
+                nativeFocus = native.focus;
+                switches++;
+                lastSwitchMs = std::chrono::duration<double, std::milli>(Clock::now() - s0).count();
+                if (c.transition == "semantic") { distance = native.distance * 2.6; yaw = c.astro.yaw - .5; pitch = -.3; transitionStart = nowS; }
+              }
+              const bool astro = c.kind == "astronomical";
+              auto st = living::style_for(c.style.empty() ? (astro ? "cinematic" : "scientific") : c.style, !astro);
+              if (astro) {
+                // space: physical atmosphere around the Earth (limb, blue haze over the disc),
+                // stars, sun disk; no artistic aerial haze; sunlight unattenuated in space
+                st.look.backdrop = std::getenv("FINALVERSE_ASTRO_NO_ATMOSPHERE") ? storm::Presentation::Backdrop::Colour : storm::Presentation::Backdrop::Atmosphere;
+                st.look.aerial_scale = 0;
+                st.look.star_brightness = 1.6f;
+                st.look.exposure_ev = -1.1f;
+                st.look.turbidity = 1.f;
+                st.look.bloom_strength = .1f;
+                st.look.vignette = .32f;
+              }
+              need(renderer.set_presentation(st.look), renderer.error());
+              if (astro) {
+                const float white[] = {1.f, .98f, .95f}, space[] = {.004f, .005f, .007f};
+                renderer.set_sun_colour(white);
+                renderer.set_sun_intensity(float(st.look.sun_radiance / M_PI));
+                renderer.set_ambient(space);
+                renderer.set_environment(storm::Renderer::Environment::None);
+                environmentFor = "space";
+              } else {
+                lighting(renderer, "studio");
+                const float key[] = {-.45f, -.8f, -.4f}, amb[] = {.14f, .15f, .18f};
+                renderer.set_sun_direction(key);
+                renderer.set_sun_intensity(2.6f);
+                renderer.set_ambient(amb);
+                if (environmentFor != "studio") { renderer.set_environment(storm::Renderer::Environment::Studio); environmentFor = "studio"; }
+              }
+              active = c;
+              haveContext = true;
+              nativeActive = true;
+              lastError.clear();
+            } else {
+            if (nativeActive) { genesis.clear(); nativeActive = false; nativeKey.clear(); native.kind = living::NativeScene::Kind::None; }
             const bool newContext = !haveContext || c.context != active.context;
             if (newContext) {
               const auto s0 = Clock::now();
@@ -712,6 +827,7 @@ int main(int argc, char **argv) {
               yaw = desiredYaw;
             }
             renderer.set_clip_distances(float(std::max(desiredDistance / 4000., .0004)), float(std::max(desiredDistance * 60., fidelity ? 3200. : geographic_far(contexts.info(c.context)->axes))));
+            }  // FWD context
             if (c.genesisStream != feed.path || c.genesisWorld != feed.world) {
               genesis.clear();
               feed = GenesisFeed{};
@@ -728,6 +844,7 @@ int main(int argc, char **argv) {
       } catch (const std::exception &e) {
         refusals++;
         lastError = e.what();
+        std::cerr << "FINALVERSE spatial render: control refused: " << e.what() << "\n";
       }
       // ---------------------------------------------------------- Ω-XX Genesis stream
       if (haveContext && !feed.path.empty()) {
@@ -795,6 +912,60 @@ int main(int argc, char **argv) {
       // ---------------------------------------------------------- motion
       if (active.orbit) desiredYaw = std::remainder(desiredYaw + dt * .12, 2 * M_PI);
       const double now = std::chrono::duration<double>(Clock::now() - started).count();
+      if (nativeActive) {
+        float sunTravel[3] = {0, -1, 0};
+        std::array<double, 3> planetWorld{};
+        double ny = active.yaw, np = active.pitch, nd = native.distance;
+        native.update(genesis, now, sunTravel, planetWorld, ny, np, nd);
+        if (active.has_camera) { ny = active.yaw; np = active.pitch; if (active.distance > 0 && native.kind == living::NativeScene::Kind::Scientific) nd = active.distance * 1e10; }
+        if (native.kind == living::NativeScene::Kind::Astronomical) renderer.set_sun_direction(sunTravel);
+        const double k = active.reduced_motion ? 1.0 : 1 - std::exp(-dt * 3.0);
+        yaw += std::remainder(ny - yaw, 2 * M_PI) * k;
+        pitch += (np - pitch) * k;
+        distance += (nd - distance) * k;
+        for (int j = 0; j < 3; j++) nativeFocus[j] += (native.focus[j] - nativeFocus[j]) * (native.descentStart >= 0 ? 1.0 : k);
+        const std::array<double, 3> anchor{-nativeFocus[0], -nativeFocus[1], -nativeFocus[2]};
+        const std::array<double, 3> cam{distance * std::cos(pitch) * std::sin(yaw), distance * std::sin(-pitch), distance * std::cos(pitch) * std::cos(yaw)};
+        if (native.kind == living::NativeScene::Kind::Astronomical) {
+          const double centre[3] = {planetWorld[0] + anchor[0], planetWorld[1] + anchor[1], planetWorld[2] + anchor[2]};
+          renderer.set_planet_frame(centre, finalverse::astro::kEarthMeanRadiusKm, 1.0);
+        }
+        renderer.set_clip_distances(float(std::max(distance / 4000., 1e-6)), float(std::max(distance * 60., native.kind == living::NativeScene::Kind::Astronomical ? 1.2e6 : 10.)));
+        renderer.set_camera_orbit(float(yaw), float(pitch), float(distance));
+        genesis.update(dt, anchor, cam, genesisBudget);
+        need(renderer.render_frame(dt), renderer.error());
+        const bool interpolatingN = std::abs(nd - distance) > nd * .01 || !native.settled;
+        if (haveContext && (i % captureEvery == 0) && useShm) {
+          uint32_t fw = 0, fh = 0;
+          const auto c0 = Clock::now();
+          need(renderer.read_frame_into(transport.back_pixels(), transport.stride_for(captureW), captureW, captureH, fw, fh), renderer.error());
+          lastCaptureMs = std::chrono::duration<double, std::milli>(Clock::now() - c0).count();
+          fvft::SlotMeta &m = transport.back_meta();
+          m.frame_index = renderer.stats().frame_index; m.render_start_ns = t0ns; m.control_sequence = active.sequence; m.source_revision = 0;
+          m.triangles = renderer.triangle_count(); m.context_switches = switches; m.refusals = refusals;
+          m.width = fw; m.height = fh; m.stride = transport.stride_for(fw); m.objects = renderer.object_count();
+          m.flags = interpolatingN ? 0u : uint32_t(fvft::SETTLED);
+          m.capture_ms = float(lastCaptureMs); m.switch_ms = float(lastSwitchMs); m.cpu_submit_ms = float(renderer.stats().frame_ms); m.gpu_wait_ms = 0;
+          const bool astro = native.kind == living::NativeScene::Kind::Astronomical;
+          m.unit_to_metre = astro ? 1000.0 : native.science.model == "microstructure" ? 1e-6 : 1e-10;
+          m.camera_distance_m = distance * m.unit_to_metre;
+          fvft::copy_text(m.context, sizeof m.context, active.context);
+          fvft::copy_text(m.definition_sha256, sizeof m.definition_sha256, "");
+          fvft::copy_text(m.frame_id, sizeof m.frame_id, astro ? "geocentric-equatorial-of-date" : native.science.model == "microstructure" ? "microstructure-illustrative" : "crystal-bcc-iron");
+          fvft::copy_text(m.units, sizeof m.units, astro ? "kilometre" : native.science.model == "microstructure" ? "micrometre" : "angstrom");
+          fvft::copy_text(m.transition, sizeof m.transition, active.transition);
+          fvft::copy_text(m.synchronization, sizeof m.synchronization, astro ? "ephemeris" : "static");
+          fvft::copy_text(m.backend, sizeof m.backend, "OGRE Metal");
+          fvft::copy_text(m.last_error, sizeof m.last_error, !lastError.empty() ? lastError : genesis.stats().last_error);
+          transport.publish();
+          published++;
+          captures++;
+        }
+        frameMs.push_back(std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
+        if (frameMs.size() > 240) frameMs.pop_front();
+        std::this_thread::sleep_until(t0 + std::chrono::nanoseconds(16666667));
+        continue;
+      }
       const double settle = active.transition == "semantic" ? std::clamp((now - transitionStart) / 1.2, 0., 1.) : 1.;
       const double ca = 1 - std::exp(-dt * (active.transition == "semantic" ? 3.2 + 6 * settle : 7.5)), pa = 1 - std::exp(-dt * 16);
       yaw += std::remainder(desiredYaw - yaw, 2 * M_PI) * ca;
