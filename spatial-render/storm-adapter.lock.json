@@ -3,7 +3,7 @@
   "repository": "https://github.com/finalverse/storm.git",
   "accepted_main": "d611f7fbf95262dad88140460745e9faf1560e85",
   "api": "Storm scene contexts, native transport readback, smooth shading, cinematic HDR presentation, Genesis procedural runtime (\u03a9-XX local candidate)",
-  "frozen_source_commit": "40054b694676932d24269c69752bb022c194601c",
+  "frozen_source_commit": "fd953e8bbf48facb60576cde48c46ab115159267",
   "source_status": "local \u03a9-XX candidate on feat/omega-xx-storm-20261124; not an accepted Storm release",
   "files": [
     {
@@ -72,7 +72,7 @@
     },
     {
       "path": "src/genesis/runtime.cpp",
-      "sha256": "b97872b6243804c516deb0fde07dbc3eebad4b53a1f756573abc10e21ad296ec"
+      "sha256": "3097ca0c2d80d4b7f8240cc28ee1d22ca6339dbb8151216874d6bc53eeef11ac"
     }
   ],
   "ogre_archives": [

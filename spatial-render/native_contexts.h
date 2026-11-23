@@ -224,11 +224,11 @@ class NativeScene {
         const double t = std::clamp((now - descentStart) / 6.0, 0.0, 1.0), e = t * t * (3 - 2 * t);
         const auto p = render(fixed_to_equatorial(earth_fixed(astro.lat, astro.lon, 0), jd));
         for (int i = 0; i < 3; i++) focus[i] = p[i] * e;
-        dist = astro.distance_km * (1 - e) + 900 * e;
+        dist = astro.distance_km * (1 - e) + 2600 * e;  // the colour map resolves the region at this range
         // look down towards the target as we arrive; yaw follows the local east
         const double tyaw = std::atan2(p[0], p[2]);
         yaw = astro.yaw * (1 - e) + tyaw * e;
-        pitch = astro.pitch * (1 - e) + (-1.05) * e;
+        pitch = astro.pitch * (1 - e) + (-0.8) * e;
         settled = t >= 1;
       } else {
         focus = {0, 0, 0};
