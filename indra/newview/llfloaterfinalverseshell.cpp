@@ -419,6 +419,24 @@ struct Model
         size_t histCursor = 0, histSize = 0;
         std::map<std::string, std::vector<std::string>> materials;  // asset -> offered materials
     } creation;
+    // Ω-XX universal contexts: native (non-FWD) context, visual style, Genesis, journey history
+    std::string style;                       // "" = the renderer's default (cinematic)
+    std::string nativeKind, nativeLabel;     // astronomical | scientific | abstract
+    std::string nativeModel;                 // scientific model id
+    double nativeDistanceKm = 0, simEpoch = 0, simScale = 0;
+    Clock::time_point nativeSince = Clock::now();
+    struct Genesis
+    {
+        bool active = false;
+        std::string stage, phase, title, world, reality, model, error, requestId, style;
+        double progress = 0, elapsed = 0, modelSeconds = 0;
+        uint64_t applied = 0, refused = 0, triangles = 0, objects = 0, queued = 0;
+        double frameP50 = 0, frameP95 = 0;
+        std::map<std::string, int> resident;
+        std::map<std::string, std::string> fieldSources;
+        std::string summary, refined;
+    } genesis;
+    std::vector<std::string> journey;        // Ω-XX navigation history across all contexts
     // AI + actions
     AiCard ai;
     std::string actionNote;
@@ -497,6 +515,9 @@ struct Engine
         casMapFile = env("FINALVERSE_CAS_MAP");
         definition = env("FINALVERSE_STORM_DEFINITION_SHA256");
         reducedMotion = env("FINALVERSE_REDUCED_MOTION") == "1";
+        genesisDir = env("FINALVERSE_GENESIS_DIR");
+        genesisProgress = env("FINALVERSE_GENESIS_PROGRESS");
+        graphFile = env("FINALVERSE_CIVILIZATION_GRAPH");
         try
         {
             auto j = bj::parse(readSmall(casMapFile, 65536)).as_object();
@@ -750,6 +771,7 @@ struct Engine
             fv_spatial_history_push(history, h.data(), h.size());
         }
         refreshHistory();
+        journeyPush(c.label);
         model.resolveMs = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
         model.navStage = "Rendering";
         LL_INFOS("FinalverseShell") << "navigate target=" << c.label << " transition=" << c.transition << " representation=" << c.repKind << " frame=" << c.frame
@@ -786,7 +808,7 @@ struct Engine
         if (f == fwdBySha.end() || cm == cas.end()) throw std::runtime_error("scene world definition " + wd.substr(0, 12) + " is not in the local CAS (" + label + ")");
         auto& home = man.at("camera").as_object().at("home").as_object();
         if (!userCamera) { camYaw = num(home.at("yaw")); camPitch = num(home.at("pitch")); camDistance = 0; }
-        bj::object ctl{ { "schema", "finalverse.storm-scene-context/0.2" }, { "sequence", ++model.controlSeq }, { "context", c.scene }, { "fwd", f->second },
+        bj::object ctl{ { "schema", "finalverse.storm-scene-context/0.3" }, { "sequence", ++model.controlSeq }, { "context", c.scene }, { "fwd", f->second },
                         { "cas", cm->second.objects }, { "definition_sha256", wd },
                         { "focus", bj::object{ { "center", bj::array{ c.focus[0] + pan[0], c.focus[1] + pan[1], c.focus[2] + pan[2] } }, { "extent", bj::array{ c.focus[3], c.focus[4], c.focus[5] } } } },
                         { "transition", reducedMotion ? "none" : transition }, { "live", man.contains("live") }, { "orbit", orbit } };
@@ -804,6 +826,10 @@ struct Engine
         ctl["overlays"] = ov;
         if (presentation != "realistic") ctl["presentation"] = presentation;
         if (frameSelection && !highlight.empty()) ctl["frame"] = "selection";
+        // Ω-XX: visual style (presentation only) and the Genesis world growing on this context
+        if (!model.style.empty()) ctl["style"] = model.style;
+        if (!genesisWorld.empty() && c.scene == genesisScene) ctl["genesis"] = bj::object{ { "stream", genesisStream }, { "world", genesisWorld } };
+        model.nativeKind.clear();
         if (!writePrivate(fs::path(frames) / "context.json", bj::serialize(ctl))) throw std::runtime_error("context.json write failed");
     }
 
@@ -879,6 +905,156 @@ struct Engine
         model.presentation = p;
         if (!model.ctx.scene.empty()) try { writeContext(model.ctx, currentManifest, "none", selectionAssets()); } catch (...) {}
     }
+    // ------------------------------------------------------------------ Ω-XX universal contexts
+    // Native contexts are built by the renderer from identified models (no FWD): astronomical
+    // (ephemeris, Blue Marble Earth), scientific (idealised crystal / illustrative
+    // microstructure), abstract (civilization graph). Every jump is recorded in the journey.
+    std::string genesisDir, genesisProgress, genesisStream, genesisWorld, genesisScene, graphFile;
+    void journeyPush(const std::string& label)
+    {
+        if (model.journey.empty() || model.journey.back() != label) model.journey.push_back(label);
+        while (model.journey.size() > 24) model.journey.erase(model.journey.begin());
+    }
+    void writeNative(const std::string& kind, const bj::object& params, const std::string& transition)
+    {
+        if (!privateDir(frames)) { toast("Storm renderer directory unavailable"); return; }
+        static const std::map<std::string, std::string> ids = { { "astronomical", "4f9d0c8e-0000-5000-8000-0000000000a1" },
+                                                                { "scientific", "4f9d0c8e-0000-5000-8000-0000000000b2" },
+                                                                { "abstract", "4f9d0c8e-0000-5000-8000-0000000000c3" } };
+        bj::object ctl{ { "schema", "finalverse.storm-scene-context/0.3" }, { "sequence", ++model.controlSeq }, { "context", ids.at(kind) }, { "kind", kind },
+                        { "transition", reducedMotion ? "none" : transition }, { kind, params } };
+        if (reducedMotion) ctl["reduced_motion"] = true;
+        if (!model.style.empty() && kind != "astronomical") ctl["style"] = model.style;
+        if (!writePrivate(fs::path(frames) / "context.json", bj::serialize(ctl))) { toast("context.json write failed"); return; }
+        navStart = Clock::now();
+        model.navigating = true;
+    }
+    void goAstronomical(bool descend)
+    {
+        const double now = (double)std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        if (model.nativeKind != "astronomical" || model.simEpoch == 0) { model.simEpoch = now; model.nativeSince = Clock::now(); }
+        model.simScale = descend ? 0 : 120;
+        model.nativeDistanceKm = descend ? 2600 : 23000;
+        bj::object a{ { "time_unix", model.simEpoch }, { "time_scale", model.simScale }, { "distance_km", 23000.0 }, { "yaw", -.05 }, { "pitch", .2 } };
+        if (descend) { a["descend"] = true; a["lat"] = 45.5017; a["lon"] = -73.5673; a["yaw"] = .95; a["pitch"] = .06; a["distance_km"] = 15000.0; }
+        writeNative("astronomical", a, "semantic");
+        model.nativeKind = "astronomical";
+        model.nativeLabel = descend ? "Descending to Montréal" : "Earth · Moon";
+        journeyPush(descend ? "Descent to Montréal" : "Earth from space");
+        LL_INFOS("FinalverseShell") << "native astronomical descend=" << descend << LL_ENDL;
+    }
+    void goScientific(const std::string& modelId)
+    {
+        bj::object sc{ { "model", modelId } };
+        if (modelId == "bcc-iron") sc["cells"] = 4;
+        writeNative("scientific", sc, "semantic");
+        model.nativeKind = "scientific";
+        model.nativeModel = modelId;
+        model.nativeLabel = modelId == "bcc-iron" ? "alpha-iron crystal (idealised BCC)" : "Tempered martensite (illustrative)";
+        journeyPush(modelId == "bcc-iron" ? "Crystal structure" : "Microstructure");
+        LL_INFOS("FinalverseShell") << "native scientific model=" << modelId << LL_ENDL;
+    }
+    void goGraph()
+    {
+        if (graphFile.empty()) { toast("No civilization graph configured"); return; }
+        writeNative("abstract", bj::object{ { "graph", graphFile } }, "semantic");
+        model.nativeKind = "abstract";
+        model.nativeLabel = "Civilization relationships (demonstration)";
+        journeyPush("Civilization graph");
+    }
+    void setStyle(const std::string& st)
+    {
+        model.style = st == "default" ? std::string() : st;
+        LL_INFOS("FinalverseShell") << "style " << (model.style.empty() ? "default" : model.style) << LL_ENDL;
+        if (model.nativeKind == "scientific") goScientific(model.nativeModel);
+        else if (model.nativeKind == "abstract") goGraph();
+        else if (model.nativeKind.empty() && !model.ctx.scene.empty()) try { writeContext(model.ctx, currentManifest, "none", selectionAssets()); } catch (...) {}
+        toast("Style: " + (model.style.empty() ? std::string("cinematic (default)") : model.style) + " — presentation only");
+    }
+    void returnBack()
+    {
+        // Ω-XX return path: scientific -> engineering component, abstract/astronomical -> the
+        // last geographic/engineering context; geographic -> Earth orbit.
+        if (model.nativeKind == "scientific" || model.nativeKind == "abstract") { model.nativeKind.clear(); journeyPush(model.ctx.label); try { writeContext(model.ctx, currentManifest, "semantic", selectionAssets()); } catch (...) {} }
+        else if (model.nativeKind.empty()) goAstronomical(false);
+    }
+    // ------------------------------------------------------------------ Ω-XX Genesis
+    std::string genesisRequestId;
+    Clock::time_point genesisStarted = Clock::now();
+    void genesisCreate(const std::string& prompt)
+    {
+        if (!privateDir(genesisDir) || !privateDir(frames)) { toast("Genesis is not configured"); return; }
+        if (prompt.size() < 3 || prompt.size() > 600) { toast("Describe the world in 3–600 characters"); return; }
+        genesisRequestId = LLUUID::generateNewID().asString();
+        genesisStream = (fs::path(frames) / ("genesis-" + genesisRequestId.substr(0, 8) + ".jsonl")).string();
+        genesisWorld.clear();
+        model.genesis = Model::Genesis{};
+        model.genesis.active = true;
+        model.genesis.stage = "understanding";
+        model.genesis.requestId = genesisRequestId;
+        genesisStarted = Clock::now();
+        // grow it beside the Montréal dataset (hybrid world), camera on the campus site
+        if (model.ctx.entity != startEntity) navigate(startEntity);
+        genesisScene = model.ctx.scene;
+        userCamera = true; camYaw = 3.9; camPitch = -.16; camDistance = 560;
+        pan[0] = 620 - model.ctx.focus[0]; pan[1] = -250 - model.ctx.focus[1]; pan[2] = 0;
+        bj::object req{ { "schema", "finalverse.genesis-request/1" }, { "request_id", genesisRequestId }, { "prompt", prompt }, { "stream", genesisStream } };
+        if (!model.style.empty()) req["style"] = model.style;
+        writePrivate(fs::path(genesisDir) / ("request-" + genesisRequestId + ".json"), bj::serialize(req));
+        journeyPush("Genesis: " + prompt.substr(0, 40));
+        try { writeContext(model.ctx, currentManifest, "none", {}); } catch (const std::exception& e) { toast(e.what()); }
+        LL_INFOS("FinalverseShell") << "genesis request id=" << genesisRequestId << " prompt=" << prompt << LL_ENDL;
+    }
+    void pollGenesis()
+    {
+        if (!model.genesis.active) return;
+        auto& g = model.genesis;
+        g.elapsed = std::chrono::duration<double>(Clock::now() - genesisStarted).count();
+        if (auto raw = readSmall(genesisProgress, 1 << 20); !raw.empty())
+            try
+            {
+                auto j = bj::parse(raw).as_object();
+                if (str(j, "request_id") == genesisRequestId)
+                {
+                    g.stage = str(j, "phase");
+                    g.phase = str(j, "phase");
+                    if (auto* p = j.if_contains("progress")) g.progress = num(*p);
+                    g.title = str(j, "title", g.title);
+                    g.reality = str(j, "reality", g.reality);
+                    g.error = str(j, "error", g.error);
+                    if (auto* m2 = j.if_contains("model"); m2 && m2->is_object()) { g.model = str(m2->as_object(), "model"); if (auto* sec = m2->as_object().if_contains("seconds")) g.modelSeconds = num(*sec); }
+                    if (auto* fsrc = j.if_contains("field_sources"); fsrc && fsrc->is_object()) for (auto& [k, x] : fsrc->as_object()) g.fieldSources[std::string(k)] = x.is_string() ? std::string(x.as_string()) : "";
+                    if (auto* sm = j.if_contains("summary"); sm && sm->is_object()) g.summary = bj::serialize(*sm);
+                    g.refined = str(j, "refined", g.refined);
+                    const std::string w = str(j, "world");
+                    if (!w.empty() && w != genesisWorld)
+                    {
+                        genesisWorld = w;
+                        g.world = w;
+                        if (model.nativeKind.empty() && model.ctx.scene == genesisScene) try { writeContext(model.ctx, currentManifest, "none", {}); } catch (...) {}
+                        LL_INFOS("FinalverseShell") << "genesis world=" << w << " title=" << g.title << LL_ENDL;
+                    }
+                }
+            }
+            catch (...) {}
+        if (auto raw = readSmall(fs::path(frames) / "genesis-status.json", 1 << 20); !raw.empty())
+            try
+            {
+                auto j = bj::parse(raw).as_object();
+                if (str(j, "world") == genesisWorld && !genesisWorld.empty())
+                {
+                    auto u = [&](const char* k) { auto* x = j.if_contains(k); return x ? (uint64_t)num(*x) : 0ull; };
+                    g.applied = u("applied"); g.refused = u("refused"); g.triangles = u("triangles"); g.objects = u("objects"); g.queued = u("queued");
+                    if (auto* x = j.if_contains("frame_ms_p50")) g.frameP50 = num(*x);
+                    if (auto* x = j.if_contains("frame_ms_p95")) g.frameP95 = num(*x);
+                    g.style = str(j, "style", g.style);
+                    g.resident.clear();
+                    if (auto* r = j.if_contains("resident"); r && r->is_object()) for (auto& [k, x] : r->as_object()) g.resident[std::string(k)] = (int)num(x);
+                }
+            }
+            catch (...) {}
+    }
+
     void resetCamera() { userCamera = false; camDistance = 0; pan[0] = pan[1] = pan[2] = 0; frameSelection = false; if (!model.ctx.scene.empty()) try { writeContext(model.ctx, currentManifest, "geometric", {}); } catch (...) {} }
 
     void refreshHistory()
@@ -1643,6 +1819,7 @@ struct Engine
             pollAi();
             pollCreation();
             pollPublisher();
+            pollGenesis();
             while (!model.toasts.empty() && Clock::now() - model.toasts.front().second > std::chrono::seconds(6)) model.toasts.pop_front();
             publish();
             // The native transport is polled at ~250 Hz so a published frame waits at most ~4 ms.
@@ -2243,7 +2420,8 @@ void LLFloaterFinalverseShell::draw()
     // ================================================================ left: here / residents
     const S32 railL = 20, railR = compact ? 270 : 330, railTop = crumbY - 30, railBottom = 120;
     const bool showRail = m->mode != Mode::Develop || wide;
-    if (showRail && !c.entity.empty())
+    const bool nativeCtx = !v->nativeKind.empty();
+    if (showRail && !c.entity.empty() && !nativeCtx)
     {
         panel(railL, railTop, railR, railBottom);
         S32 y = railTop - 30;
@@ -2333,7 +2511,7 @@ void LLFloaterFinalverseShell::draw()
 
     // ================================================================ right: inspector (Analyze) / action card (Explore)
     const S32 insR = W - 20, insL = W - (compact ? 300 : 380), insTop = crumbY - 78, insBottom = 120;
-    if (m->mode == Mode::Analyze && !c.entity.empty())
+    if (m->mode == Mode::Analyze && !c.entity.empty() && !nativeCtx)
     {
         // Ω-XIX progressive inspector: an overview first (what it is, how it is shown, its
         // primary dimensions, material if the catalog states one, key actions); technical
@@ -2591,7 +2769,7 @@ void LLFloaterFinalverseShell::draw()
         if (!cr.edits.empty() && y > cb + 34) text(clip("Last edit: " + cr.edits.back(), insR - cl - 36, 0), cl + 18, cb + 14, T.ink3, 0);
         else text("Arrows move · [ ] rotate · M material · Ctrl+Z undo", cl + 18, cb + 14, T.ink3, 0);
     }
-    else if ((m->mode == Mode::Explore || m->mode == Mode::Create) && !v->selected.empty() && !compact)
+    else if ((m->mode == Mode::Explore || m->mode == Mode::Create) && !v->selected.empty() && !compact && !nativeCtx)
     {
         // Contextual action card for the selection.
         std::string kind, label = v->selectedLabel;
@@ -3065,6 +3243,23 @@ void LLFloaterFinalverseShell::draw()
         act("Go home (Montréal)", "H", [eng] { eng->post([eng] { eng->navigate(eng->startEntity); }); });
         act("Larger text", "Ctrl +", [] { gScale = llmin(gScale + 1, 2); });
         act("Keyboard shortcuts", "?", [this] { m->showHelp = true; });
+        // Ω-XX universal contexts, styles and Genesis.
+        auto uni = [&](const std::string& label, const std::string& detail, std::function<void()> f) {
+            if (match(label)) items.push_back({ "Universe", label, detail, true, std::move(f) });
+        };
+        uni("Earth from space", "astronomical · ephemeris", [eng] { eng->post([eng] { eng->goAstronomical(false); }); });
+        uni("Descend to Montréal", "astronomical → geographic", [eng] { eng->post([eng] { eng->goAstronomical(true); }); });
+        uni("Material structure: crystal", "scientific · idealised BCC α-iron", [eng] { eng->post([eng] { eng->goScientific("bcc-iron"); }); });
+        uni("Material structure: microstructure", "scientific · illustrative", [eng] { eng->post([eng] { eng->goScientific("microstructure"); }); });
+        uni("Civilization relationships", "abstract · demonstration graph", [eng] { eng->post([eng] { eng->goGraph(); }); });
+        uni("Return", "back through the journey", [eng] { eng->post([eng] { eng->returnBack(); }); });
+        static const char* styles[] = { "cinematic", "engineering", "scientific", "architectural", "stylized", "fantasy", "scifi", "historical", "abstract", "educational" };
+        for (auto* st : styles)
+            if (match(std::string("Style: ") + st)) items.push_back({ "Styles", std::string("Style: ") + st, v->style == st ? "current · presentation only" : "presentation only", true,
+                                                                       [eng, k = std::string(st)] { eng->post([eng, k] { eng->setStyle(k); }); } });
+        if (!m->paletteQuery.empty())
+            items.push_back({ "Genesis", "Create a world: " + m->paletteQuery, "generated while you explore · designed content", true,
+                              [eng, qq = m->paletteQuery] { eng->post([eng, qq] { eng->genesisCreate(qq); }); } });
         // AI instruction (always offered for free text).
         if (!m->paletteQuery.empty())
             items.push_back({ "AI", "Ask FINALVERSE: " + m->paletteQuery, "typed plan · validated before anything runs", true, [eng, qq = m->paletteQuery] { eng->post([eng, qq] { eng->ask(qq); }); } });
@@ -3102,6 +3297,122 @@ void LLFloaterFinalverseShell::draw()
         }
         if (items.empty()) text("No matches. Press Enter to ask FINALVERSE.", pl + 24, y - 20, T.ink3, 1);
         text("↑↓ select · Enter run · Esc close · results are filtered by your access", pl + 22, ptop - ph + 14, T.ink3, 0);
+    }
+
+    // ================================================================ Ω-XX overlays
+    // Context-aware HUD (astronomical / scientific / abstract), the Genesis panel and the
+    // journey line. The world stays dominant: compact glass cards at the edges.
+    if (v)
+    {
+        const S32 cardL = 24, cardW = compact ? 300 : 360, cardTop = H - 120;
+        auto chip = [&](const std::string& s2, S32 x, S32 y, const LLColor4& col) { const S32 w = width(s2, 0, true) + 16; roundRect(x, y, x + w, y - 20, 10, alpha(col, .18f)); text(s2, x + 8, y - 15, col, 0, true); return x + w + 6; };
+        if (nativeCtx)
+        {
+            std::vector<std::pair<std::string, std::string>> rows;
+            std::string title = v->nativeLabel, badge, kindLabel;
+            LLColor4 badgeCol = T.accent;
+            if (v->nativeKind == "astronomical")
+            {
+                kindLabel = "ASTRONOMICAL";
+                const double sim = v->simEpoch + std::chrono::duration<double>(Clock::now() - v->nativeSince).count() * v->simScale;
+                const time_t tt = (time_t)sim;
+                char buf[64] = {};
+                std::strftime(buf, sizeof buf, "%Y-%m-%d %H:%M UTC", std::gmtime(&tt));
+                rows = { { "Body", "Earth · Moon · Sun (direction)" }, { "Sim time", std::string(buf) + (v->simScale > 0 ? "  ×" + fmt(v->simScale, 0) : "") },
+                         { "Frame", fr && !fr->frameId.empty() ? fr->frameId : "geocentric-equatorial-of-date" }, { "Units", "kilometre" },
+                         { "Ephemeris", "AA low-precision · checked vs JPL Horizons" }, { "Earth", "NASA Blue Marble (observed, ~20–40 km/px)" }, { "Moon", "orbit computed · surface illustrative" } };
+                badge = "OBSERVED + COMPUTED";
+            }
+            else if (v->nativeKind == "scientific")
+            {
+                kindLabel = "SCIENTIFIC";
+                const bool crystal = v->nativeModel == "bcc-iron";
+                rows = crystal ? std::vector<std::pair<std::string, std::string>>{ { "Material", "AISI 52100 bearing steel" }, { "Structure", "α-iron, body-centred cubic (Im-3m)" },
+                                                                                  { "a", "2.8665 Å (reference value)" }, { "Nearest neighbour", "√3/2 · a = 2.4825 Å (highlighted)" },
+                                                                                  { "Units", "ångström" }, { "Note", "hardened matrix is tetragonal martensite" } }
+                               : std::vector<std::pair<std::string, std::string>>{ { "Material", "AISI 52100 bearing steel" }, { "Shows", "prior-austenite grains, lath bands, carbides" },
+                                                                                  { "Units", "micrometre" }, { "This bearing", "grain size, hardness: unknown" } };
+                badge = crystal ? "IDEALISED MODEL" : "ILLUSTRATIVE";
+                badgeCol = T.warn;
+            }
+            else
+            {
+                kindLabel = "CIVILIZATION";
+                rows = { { "Nodes", "observed · fictional (demonstration) · designed" }, { "Edges", "factual · demonstration · designed · hypothetical" },
+                         { "Operator of the facility", "Port Robotics Cooperative (fictional)" }, { "Layout", "positions carry no meaning" } };
+                badge = "DEMONSTRATION";
+                badgeCol = T.warn;
+            }
+            const S32 h = 92 + (S32)rows.size() * 22;
+            panel(cardL, cardTop, cardL + cardW, cardTop - h, 16.f);
+            text(kindLabel, cardL + 18, cardTop - 24, T.accent, 0, true);
+            chip(badge, cardL + cardW - width(badge, 0, true) - 32, cardTop - 10, badgeCol);
+            text(clip(title, cardW - 36, 2, true), cardL + 18, cardTop - 52, T.ink, 2, true);
+            S32 y = cardTop - 80;
+            for (auto& r : rows)
+            {
+                text(r.first, cardL + 18, y, T.ink3, 0);
+                text(clip(r.second, cardW - 150, 0), cardL + 132, y, T.ink, 0);
+                y -= 22;
+            }
+            // context actions
+            std::vector<std::pair<std::string, std::function<void()>>> acts;
+            if (v->nativeKind == "astronomical") { acts.push_back({ "Descend to Montréal", [eng] { eng->post([eng] { eng->goAstronomical(true); }); } });
+                                                    acts.push_back({ "Enter Montréal", [eng] { eng->post([eng] { eng->navigate(eng->startEntity); }); } }); }
+            else if (v->nativeKind == "scientific") { acts.push_back({ v->nativeModel == "bcc-iron" ? "Microstructure" : "Crystal", [eng, cr = v->nativeModel == "bcc-iron"] { eng->post([eng, cr] { eng->goScientific(cr ? "microstructure" : "bcc-iron"); }); } });
+                                                       acts.push_back({ "Back to component", [eng] { eng->post([eng] { eng->returnBack(); }); } }); }
+            else acts.push_back({ "Back", [eng] { eng->post([eng] { eng->returnBack(); }); } });
+            S32 bx = cardL + 18;
+            for (auto& a2 : acts)
+            {
+                const S32 bw = width(a2.first, 0, true) + 24;
+                roundRect(bx, cardTop - h + 34, bx + bw, cardTop - h + 10, 12, T.accentSoft);
+                text(a2.first, bx + bw / 2, cardTop - h + 17, T.ink, 0, true, LLFontGL::HCENTER);
+                m->hit(LLRect(bx, cardTop - h + 34, bx + bw, cardTop - h + 10), a2.second, "xx-" + a2.first);
+                bx += bw + 8;
+            }
+        }
+        // Genesis panel (top right)
+        if (v->genesis.active)
+        {
+            const auto& g = v->genesis;
+            const S32 gR = W - 24, gL = gR - (compact ? 320 : 380), gTop = H - 120, gH = 230;
+            panel(gL, gTop, gR, gTop - gH, 16.f, true);
+            text("GENESIS", gL + 18, gTop - 24, T.accent, 0, true);
+            chip(g.reality.empty() ? "DESIGNED" : (g.reality == "hybrid" ? "HYBRID · DESIGNED" : "DESIGNED"), gR - 150, gTop - 10, T.warn);
+            text(clip(g.title.empty() ? "Understanding your request…" : g.title, gR - gL - 36, 2, true), gL + 18, gTop - 52, T.ink, 2, true);
+            static const char* phases[] = { "understanding", "landform", "layout", "streets", "architecture", "landscape", "life", "complete" };
+            S32 px = gL + 18;
+            const S32 pw = (gR - gL - 36) / 8;
+            int cur = 0;
+            for (int i = 0; i < 8; ++i) if (g.phase == phases[i]) cur = i;
+            for (int i = 0; i < 8; ++i)
+            {
+                const LLColor4 col = i < cur ? T.accent : i == cur ? T.live : alpha(T.ink3, .35f);
+                roundRect(px + i * pw, gTop - 70, px + (i + 1) * pw - 4, gTop - 76, 3, col);
+            }
+            text(g.phase.empty() ? "starting" : g.phase, gL + 18, gTop - 96, T.ink, 0, true);
+            text(fmt(g.progress * 100, 0) + " %  ·  " + fmt(g.elapsed, 0) + " s", gR - 18, gTop - 96, T.ink3, 0, false, LLFontGL::RIGHT);
+            auto res = [&](const char* k) { auto it = g.resident.find(k); return it == g.resident.end() ? 0 : it->second; };
+            S32 y = gTop - 122;
+            const std::string l1 = std::to_string(res("building") + res("asset")) + " buildings · " + std::to_string(res("grove")) + " groves · " + std::to_string(res("road")) + " roads";
+            const std::string l2 = std::to_string(res("vehicle")) + " pods · " + std::to_string(res("robot")) + " robots · " + fmt(g.triangles / 1000.0, 0) + "k triangles";
+            text(l1, gL + 18, y, T.ink, 0); y -= 20;
+            text(l2, gL + 18, y, T.ink2, 0); y -= 20;
+            text("frame p50 " + fmt(g.frameP50, 1) + " ms · p95 " + fmt(g.frameP95, 1) + " ms · " + std::to_string(g.refused) + " refused", gL + 18, y, T.ink3, 0); y -= 20;
+            if (!g.model.empty()) { text(clip("spec by " + g.model + " in " + fmt(g.modelSeconds, 1) + " s · style " + (g.style.empty() ? "default" : g.style), gR - gL - 36, 0), gL + 18, y, T.ink3, 0); y -= 20; }
+            if (!g.refined.empty()) { text(clip(g.refined, gR - gL - 36, 0), gL + 18, y, T.live, 0); y -= 20; }
+            if (!g.error.empty()) text(clip(g.error, gR - gL - 36, 0), gL + 18, y, T.bad, 0);
+        }
+        // Journey line (bottom left, above the ask bar)
+        if (!v->journey.empty())
+        {
+            std::string line;
+            const size_t from = v->journey.size() > 6 ? v->journey.size() - 6 : 0;
+            for (size_t i = from; i < v->journey.size(); ++i) line += (line.empty() ? "" : "  ›  ") + v->journey[i];
+            text(clip(line, W - 120, 0), 24, 96, alpha(T.ink2, .9f), 0);
+        }
+        if (!v->style.empty()) chip("STYLE · " + v->style, W - 24 - width("STYLE · " + v->style, 0, true) - 16, 112, T.accent);
     }
 
     // ---- scripted UI (same code paths as the controls; for reproducible evidence). Runs after
@@ -3230,6 +3541,21 @@ void LLFloaterFinalverseShell::draw()
             m->perfDraws = m->perfPresented = 0;
             m->perfT0 = t;
         }
+        else if (cmd == "native")
+        {
+            if (arg == "astro") eng->post([eng] { eng->goAstronomical(false); });
+            else if (arg == "descend") eng->post([eng] { eng->goAstronomical(true); });
+            else if (arg == "crystal") eng->post([eng] { eng->goScientific("bcc-iron"); });
+            else if (arg == "micro") eng->post([eng] { eng->goScientific("microstructure"); });
+            else if (arg == "graph") eng->post([eng] { eng->goGraph(); });
+        }
+        else if (cmd == "style") eng->post([eng, arg] { eng->setStyle(arg); });
+        else if (cmd == "genesis") eng->post([eng, arg] { eng->genesisCreate(arg); });
+        else if (cmd == "return") eng->post([eng] { eng->returnBack(); });
+        else if (cmd == "campus") eng->post([eng, arg] { double y = .75, p = -.2, d = 480, fx = 620, fy = -230; std::istringstream(arg) >> y >> p >> d >> fx >> fy;
+                                                        eng->userCamera = true; eng->camYaw = y; eng->camPitch = p; eng->camDistance = d;
+                                                        eng->pan[0] = fx - eng->model.ctx.focus[0]; eng->pan[1] = fy - eng->model.ctx.focus[1];
+                                                        try { eng->writeContext(eng->model.ctx, eng->currentManifest, "geometric", {}); } catch (...) {} });
         else if (cmd == "mark") LL_INFOS("FinalverseShell") << "MARK " << arg << " context=" << (v ? v->ctx.label : "") << " rev=" << (v ? v->live.revision : 0) << LL_ENDL;
     }
 
