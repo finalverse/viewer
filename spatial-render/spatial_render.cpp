@@ -89,7 +89,7 @@ struct Control {
   std::string kind;
   living::AstroParams astro;
   living::ScienceParams science;
-  std::string nativeKey;
+  std::string nativeKey, graphFile;
   bool native() const { return !kind.empty() && kind != "fwd"; }
   bool live = false, orbit = false, has_camera = false, reduced_motion = false;
   Vec center{}, extent{};
@@ -110,7 +110,7 @@ Control control(const std::string &raw) {
   if (schema.ends_with("/0.3") && d.HasMember("kind") && text(d["kind"]) != "fwd") {
     // Ω-XX native context: astronomical or scientific, built by the renderer from an
     // identified model (no FWD, no CAS). Same sequence/context/transition semantics.
-    keys(d, {"schema", "sequence", "context", "kind", "transition"}, {"camera", "style", "sun", "astronomical", "scientific", "reduced_motion"});
+    keys(d, {"schema", "sequence", "context", "kind", "transition"}, {"camera", "style", "sun", "astronomical", "scientific", "abstract", "reduced_motion"});
     c.sequence = integer(d["sequence"]);
     c.context = text(d["context"]);
     require(uuid(c.context), "context must be a UUID");
@@ -141,8 +141,14 @@ Control control(const std::string &raw) {
       if (sc.HasMember("cells")) c.science.cells = int(number(sc["cells"], 1, 8));
       if (sc.HasMember("lattice_a_angstrom")) c.science.a = number(sc["lattice_a_angstrom"], 1, 20);
       c.nativeKey = "science|" + c.science.model + "|" + std::to_string(c.science.cells) + "|" + std::to_string(c.science.a);
+    } else if (c.kind == "abstract") {
+      require(d.HasMember("abstract"), "abstract parameters");
+      keys(d["abstract"], {"graph"});
+      c.graphFile = text(d["abstract"]["graph"], 1024);
+      require(fs::path(c.graphFile).is_absolute(), "absolute graph path");
+      c.nativeKey = "abstract|" + c.graphFile;
     } else {
-      throw std::runtime_error("context kind must be fwd, astronomical or scientific");
+      throw std::runtime_error("context kind must be fwd, astronomical, scientific or abstract");
     }
     if (d.HasMember("camera")) {
       keys(d["camera"], {"yaw", "pitch"}, {"distance_m"});
@@ -613,7 +619,19 @@ int main(int argc, char **argv) {
                 beacons.clear(); beaconPositions.clear(); bodies.clear(); explode.clear(); frameOverride = false;
                 feed = GenesisFeed{}; genesisStyle.clear(); genesisSun = false;
                 if (c.kind == "astronomical") native.start_astro(genesis, c.astro, earthTexture, nowS);
-                else native.start_science(genesis, c.science);
+                else if (c.kind == "abstract") {
+                  // finalverse.civilization-graph/1 (Core knowledge); layout only
+                  rapidjson::Document g;
+                  const auto raw = read(c.graphFile, 1 << 20);
+                  g.Parse(raw.data(), raw.size());
+                  need(!g.HasParseError() && g.HasMember("nodes") && g.HasMember("edges"), "civilization graph");
+                  std::vector<living::NativeScene::GraphNode> nodes;
+                  std::vector<living::NativeScene::GraphEdge> edges;
+                  for (auto &n : g["nodes"].GetArray()) nodes.push_back({n["id"].GetString(), n["type"].GetString(), n["reality"].GetString()});
+                  for (auto &e : g["edges"].GetArray()) edges.push_back({e["from"].GetString(), e["to"].GetString(), e["status"].GetString()});
+                  need(nodes.size() <= 512 && edges.size() <= 2048, "graph bounds");
+                  native.start_abstract(genesis, nodes, edges);
+                } else native.start_science(genesis, c.science);
                 nativeKey = c.nativeKey;
                 nativeFocus = native.focus;
                 switches++;
@@ -621,7 +639,11 @@ int main(int argc, char **argv) {
                 if (c.transition == "semantic") { distance = native.distance * 2.6; yaw = c.astro.yaw - .5; pitch = -.3; transitionStart = nowS; }
               }
               const bool astro = c.kind == "astronomical";
-              auto st = living::style_for(c.style.empty() ? (astro ? "cinematic" : "scientific") : c.style, !astro);
+              auto st = living::style_for(c.style.empty() ? (astro ? "cinematic" : c.kind == "abstract" ? "abstract" : "scientific") : c.style, !astro);
+              if (c.kind == "abstract") {
+                // colour carries meaning here (reality profile, relationship status): keep it
+                st.look.saturation = 1.15f; st.look.outline = .25f; st.look.exposure_ev = -.2f; st.look.bloom_strength = .35f;
+              }
               if (astro) {
                 // space: physical atmosphere around the Earth (limb, blue haze over the disc),
                 // stars, sun disk; no artistic aerial haze; sunlight unattenuated in space
@@ -961,8 +983,9 @@ int main(int argc, char **argv) {
           m.camera_distance_m = distance * m.unit_to_metre;
           fvft::copy_text(m.context, sizeof m.context, active.context);
           fvft::copy_text(m.definition_sha256, sizeof m.definition_sha256, "");
-          fvft::copy_text(m.frame_id, sizeof m.frame_id, astro ? "geocentric-equatorial-of-date" : native.science.model == "microstructure" ? "microstructure-illustrative" : "crystal-bcc-iron");
-          fvft::copy_text(m.units, sizeof m.units, astro ? "kilometre" : native.science.model == "microstructure" ? "micrometre" : "angstrom");
+          const bool graphCtx = native.kind == living::NativeScene::Kind::Abstract;
+          fvft::copy_text(m.frame_id, sizeof m.frame_id, astro ? "geocentric-equatorial-of-date" : graphCtx ? "graph-layout" : native.science.model == "microstructure" ? "microstructure-illustrative" : "crystal-bcc-iron");
+          fvft::copy_text(m.units, sizeof m.units, astro ? "kilometre" : graphCtx ? "dimensionless" : native.science.model == "microstructure" ? "micrometre" : "angstrom");
           fvft::copy_text(m.transition, sizeof m.transition, active.transition);
           fvft::copy_text(m.synchronization, sizeof m.synchronization, astro ? "ephemeris" : "static");
           fvft::copy_text(m.backend, sizeof m.backend, "OGRE Metal");

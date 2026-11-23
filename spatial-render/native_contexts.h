@@ -18,7 +18,9 @@
 #include "storm/genesis/runtime.h"
 #include <array>
 #include <cmath>
+#include <map>
 #include <string>
+#include <vector>
 
 namespace living {
 
@@ -39,7 +41,7 @@ struct ScienceParams {
 
 class NativeScene {
  public:
-  enum class Kind { None, Astronomical, Scientific } kind = Kind::None;
+  enum class Kind { None, Astronomical, Scientific, Abstract } kind = Kind::None;
   AstroParams astro;
   ScienceParams science;
   double started = 0;
@@ -143,6 +145,66 @@ class NativeScene {
     distance = n * a * 2.3;
   }
 
+  // ABSTRACT: a relationship graph laid out in layers (place -> facility/organisation ->
+  // activity/building -> machine -> component -> material -> structure). Nodes are spheres
+  // coloured by reality profile, edges tubes coloured by status (factual cyan, demonstration
+  // amber, designed violet, hypothetical dim red). Layout only: positions mean nothing.
+  struct GraphNode { std::string id, type, reality; };
+  struct GraphEdge { std::string from, to, status; };
+  void start_abstract(storm::genesis::Runtime &rt, const std::vector<GraphNode> &nodes, const std::vector<GraphEdge> &edges) {
+    rt.clear();
+    kind = Kind::Abstract;
+    focus = {0, 0, 0};
+    auto layer = [](const std::string &t) {
+      if (t == "place" || t == "world") return 0;
+      if (t == "facility" || t == "organization" || t == "network") return 1;
+      if (t == "activity" || t == "building") return 2;
+      if (t == "machine") return 3;
+      if (t == "component") return 4;
+      if (t == "material") return 5;
+      return 6;
+    };
+    std::map<int, int> count, seen;
+    for (auto &n : nodes) count[layer(n.type)]++;
+    std::map<std::string, std::array<double, 3>> pos;
+    for (auto &n : nodes) {
+      const int L = layer(n.type), k = seen[L]++, c = count[L];
+      const double x = (k - (c - 1) / 2.0) * 13.0, y = 30.0 - L * 9.5, z = (L % 2 ? 3.0 : -3.0);
+      pos[n.id] = {x, y, z};
+    }
+    using namespace storm::genesis;
+    std::map<std::string, Request> byReality;
+    auto colour = [](const std::string &r) -> std::array<double, 3> {
+      if (r == "observed") return {.2, .85, 1.0};
+      if (r == "fictional") return {1.0, .62, .18};
+      if (r == "designed") return {.68, .45, 1.0};
+      return {.8, .8, .8};
+    };
+    for (auto &n : nodes) {
+      auto &rq = byReality[n.reality];
+      if (rq.node.id.empty()) {
+        const auto c = colour(n.reality);
+        rq.node.id = "graph-nodes-" + n.reality; rq.node.kind = "atoms"; rq.priority = 0; rq.reveal_seconds = 1.4; rq.at.on_ground = false;
+        rq.node.num = {{"radius", 2.0}, {"segments", 28}, {"r", c[0] * .4}, {"g", c[1] * .4}, {"b", c[2] * .4}, {"metallic", .2}, {"roughness", .3},
+                       {"er", c[0] * 2.2}, {"eg", c[1] * 2.2}, {"eb", c[2] * 2.2}};
+      }
+      rq.node.points3.push_back(pos[n.id]);
+    }
+    for (auto &[k, rq] : byReality) { (void)k; rt.submit(rq); }
+    int e = 0;
+    for (auto &g : edges) {
+      if (!pos.count(g.from) || !pos.count(g.to)) continue;
+      Request t;
+      t.node.id = "graph-edge-" + std::to_string(e++); t.node.kind = "tube"; t.priority = 1; t.reveal_seconds = 1.0; t.at.on_ground = false;
+      const bool hyp = g.status == "hypothetical", fact = g.status == "factual", des = g.status == "designed";
+      const double r = hyp ? .7 : fact ? .2 : des ? .62 : 1.0, gg = hyp ? .15 : fact ? .85 : des ? .4 : .66, b = hyp ? .15 : fact ? 1.0 : des ? 1.0 : .2;
+      t.node.num = {{"radius", hyp ? .12 : .22}, {"sides", 8}, {"glow", hyp ? 1.2 : 3.0}, {"r", r}, {"g", gg}, {"b", b}};
+      t.node.points3 = {pos[g.from], pos[g.to]};
+      rt.submit(t);
+    }
+    distance = 105;
+  }
+
   // Per frame. Returns the world-local focus; fills the sun travel direction (astro).
   void update(storm::genesis::Runtime &rt, double now, float sun_travel[3], std::array<double, 3> &planet_world, double &yaw, double &pitch, double &dist) {
     settled = true;
@@ -174,7 +236,7 @@ class NativeScene {
         yaw = astro.yaw;
         pitch = astro.pitch;
       }
-    } else if (kind == Kind::Scientific) {
+    } else if (kind == Kind::Scientific || kind == Kind::Abstract) {
       dist = distance;
     }
   }
