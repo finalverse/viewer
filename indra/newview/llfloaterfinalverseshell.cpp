@@ -989,6 +989,7 @@ struct Engine
         genesisStream = (fs::path(frames) / ("genesis-" + genesisRequestId.substr(0, 8) + ".jsonl")).string();
         genesisWorld.clear();
         model.genesis = Model::Genesis{};
+        model.ai = AiCard{};  // the Genesis panel replaces any open answer card
         model.genesis.active = true;
         model.genesis.stage = "understanding";
         model.genesis.requestId = genesisRequestId;
@@ -3304,7 +3305,7 @@ void LLFloaterFinalverseShell::draw()
     // journey line. The world stays dominant: compact glass cards at the edges.
     if (v)
     {
-        const S32 cardL = 24, cardW = compact ? 300 : 360, cardTop = H - 120;
+        const S32 cardL = 24, cardW = compact ? 300 : 360, cardTop = H - 132;
         auto chip = [&](const std::string& s2, S32 x, S32 y, const LLColor4& col) { const S32 w = width(s2, 0, true) + 16; roundRect(x, y, x + w, y - 20, 10, alpha(col, .18f)); text(s2, x + 8, y - 15, col, 0, true); return x + w + 6; };
         if (nativeCtx)
         {
@@ -3376,7 +3377,7 @@ void LLFloaterFinalverseShell::draw()
         if (v->genesis.active)
         {
             const auto& g = v->genesis;
-            const S32 gR = W - 24, gL = gR - (compact ? 320 : 380), gTop = H - 120, gH = 230;
+            const S32 gR = W - 24, gL = gR - (compact ? 320 : 380), gTop = H - 156, gH = 230;
             panel(gL, gTop, gR, gTop - gH, 16.f, true);
             text("GENESIS", gL + 18, gTop - 24, T.accent, 0, true);
             chip(g.reality.empty() ? "DESIGNED" : (g.reality == "hybrid" ? "HYBRID · DESIGNED" : "DESIGNED"), gR - 150, gTop - 10, T.warn);
@@ -3410,9 +3411,10 @@ void LLFloaterFinalverseShell::draw()
             std::string line;
             const size_t from = v->journey.size() > 6 ? v->journey.size() - 6 : 0;
             for (size_t i = from; i < v->journey.size(); ++i) line += (line.empty() ? "" : "  ›  ") + v->journey[i];
-            text(clip(line, W - 120, 0), 24, 96, alpha(T.ink2, .9f), 0);
+            // under the breadcrumbs, clear of the suggestion chips and the ask bar
+            text(clip("Journey  ›  " + line, W / 2, 0), 24, H - 108, alpha(T.ink3, .95f), 0);
         }
-        if (!v->style.empty()) chip("STYLE · " + v->style, W - 24 - width("STYLE · " + v->style, 0, true) - 16, 112, T.accent);
+        if (!v->style.empty()) chip("STYLE · " + v->style, W / 2 + 140, H - 96, T.accent);
     }
 
     // ---- scripted UI (same code paths as the controls; for reproducible evidence). Runs after
