@@ -656,6 +656,7 @@ int main(int argc, char **argv) {
                 st.look.bloom_strength = .1f;
                 st.look.vignette = .32f;
               }
+              if (const char *ao = std::getenv("FINALVERSE_STORM_SSAO")) st.look.ambient_occlusion = float(std::clamp(std::atof(ao), 0.0, 1.0));
               need(renderer.set_presentation(st.look), renderer.error());
               if (astro) {
                 const float white[] = {1.f, .98f, .95f}, space[] = {.011f, .013f, .019f};  // Ω-XXI: night side faintly lifted for legibility (presentation)
@@ -799,6 +800,7 @@ int main(int argc, char **argv) {
               // eye adaptation for low sun: twilight scenes are shown about 1.4 EV brighter
               // (a fixed curve on the sun elevation, documented; not a metered auto-exposure)
               if (!eng) st.look.exposure_ev += float(std::clamp((12.0 - st.sun_elevation_deg) / 16.0, 0.0, 1.0) * 1.4);
+              if (const char *ao = std::getenv("FINALVERSE_STORM_SSAO")) st.look.ambient_occlusion = float(std::clamp(std::atof(ao), 0.0, 1.0));
               need(renderer.set_presentation(st.look), renderer.error());
               const std::string key = styleName + "|" + std::to_string(st.sun_elevation_deg) + "|" + std::to_string(st.sun_azimuth_deg) + "|" + c.context;
               if (eng) {
