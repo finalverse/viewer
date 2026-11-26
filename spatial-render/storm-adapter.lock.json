@@ -2,25 +2,25 @@
   "schema": "finalverse.storm-viewer-adapter-lock/1",
   "repository": "https://github.com/finalverse/storm.git",
   "accepted_main": "d611f7fbf95262dad88140460745e9faf1560e85",
-  "api": "Storm scene contexts, native transport readback, smooth shading, cinematic HDR presentation, Genesis procedural runtime (\u03a9-XX local candidate)",
-  "frozen_source_commit": "fd953e8bbf48facb60576cde48c46ab115159267",
-  "source_status": "local \u03a9-XX candidate on feat/omega-xx-storm-20261124; not an accepted Storm release",
+  "api": "Storm scene contexts, native transport readback, smooth shading, cinematic HDR presentation, Genesis procedural runtime (\u03a9-XXI local candidate)",
+  "frozen_source_commit": "7f61ea9911e29b56bb170f6ed76b4645fb56f754",
+  "source_status": "local \u03a9-XXI candidate on feat/omega-xxi-storm-20261126; not an accepted Storm release",
   "files": [
     {
       "path": "include/storm/render/renderer.h",
-      "sha256": "a27fc256fa4da23e1d129b389e1774645801f1247049ed623bc911ddf9fe4629"
+      "sha256": "3b0273f0c794d960f58407019611b7687964ac39f36f7e4b27246742a80fdc60"
     },
     {
       "path": "src/render/renderer.cpp",
-      "sha256": "e3bf013b92d443541330fb861875ca0b137e35d22af940c00417b20232b18387"
+      "sha256": "365ce2804824f502858e9c738adaecd2b019b116ae59abc6164de822869b45f9"
     },
     {
       "path": "include/storm/fwd_scene.h",
-      "sha256": "ace8db26d458f443951739e62755a9226013afcc7fe1cfa9c0abc34d316a1d5d"
+      "sha256": "e579825e6b012f44e5c5877ce9e66668df5bd1a76eb3247bc1caef453fb8246e"
     },
     {
       "path": "world-definition/scene.cpp",
-      "sha256": "f65bf5e84013fdcaac1c98626311f3636f45f74c97466af16e33e0a887ade3e7"
+      "sha256": "5c44dc20a4d85024699c286e44bbe28ea815955528db04b3956b91b78d2691da"
     },
     {
       "path": "include/storm/scene_context.h",
@@ -44,7 +44,7 @@
     },
     {
       "path": "media/storm/Metal/StormCompose_ps.metal",
-      "sha256": "160e0d0c43c176cb3e1d2c7feaa4c2d349a79c33877e4a8ed77f0338d5973bbc"
+      "sha256": "2018f22eba15294a5ad46279c60ca5188a5fde7af3627a3c7c6a37c72d3f0d7f"
     },
     {
       "path": "media/storm/Metal/StormFinal_ps.metal",
@@ -64,7 +64,7 @@
     },
     {
       "path": "src/genesis/procedural.cpp",
-      "sha256": "9ff804bdcf5f15132e2ada2da13ee4acbcbafc045588f57a6ef03736cd4d9f0a"
+      "sha256": "60b0005c602be466115c795d90bdff5a5b362715fcc91fac1489cbb90e3b2829"
     },
     {
       "path": "include/storm/genesis/runtime.h",
@@ -72,7 +72,11 @@
     },
     {
       "path": "src/genesis/runtime.cpp",
-      "sha256": "3097ca0c2d80d4b7f8240cc28ee1d22ca6339dbb8151216874d6bc53eeef11ac"
+      "sha256": "ad73652075dbb5b89727d764c3717b607fb736b4b4fe62dd304bc3cf520cd801"
+    },
+    {
+      "path": "src/genesis/procedural_v2.h",
+      "sha256": "197e4e85f5bcec35b8b3d6ac0a17264b0bd8c6c034fb2a10715378bd58311ae1"
     }
   ],
   "ogre_archives": [
