@@ -441,6 +441,11 @@ struct Model
         std::map<std::string, int> resident;
         std::map<std::string, std::string> fieldSources;
         std::string summary, refined;
+        // Ω-XXI Genesis 2.0: quality levels G0..G4 (id, label, state, seconds), versions, publication
+        struct Stage { std::string id, label, state; double seconds = 0; };
+        std::vector<Stage> stages;
+        std::string quality, versionLabel, pubStage, pubMessage, pubReceipt;
+        int versions = 0;
     } genesis;
     std::vector<std::string> journey;        // Ω-XX navigation history across all contexts
     // Ω-XXI: sun set by the AI Art Director (presentation only), publication request counter,
@@ -949,8 +954,9 @@ struct Engine
         if (model.nativeKind != "astronomical" || model.simEpoch == 0) { model.simEpoch = now; model.nativeSince = Clock::now(); }
         model.simScale = descend ? 0 : 120;
         model.nativeDistanceKm = descend ? 2600 : 23000;
-        bj::object a{ { "time_unix", model.simEpoch }, { "time_scale", model.simScale }, { "distance_km", 23000.0 }, { "yaw", -.05 }, { "pitch", .2 } };
-        if (descend) { a["descend"] = true; a["lat"] = 45.5017; a["lon"] = -73.5673; a["yaw"] = .95; a["pitch"] = .06; a["distance_km"] = 15000.0; }
+        // Ω-XXI: framed from 62° off the sun so the terminator, the limb and the night side show
+        bj::object a{ { "time_unix", model.simEpoch }, { "time_scale", model.simScale }, { "distance_km", 23000.0 }, { "yaw", 1.08 }, { "pitch", .16 }, { "sun_relative", true } };
+        if (descend) { a.erase("sun_relative"); a["descend"] = true; a["lat"] = 45.5017; a["lon"] = -73.5673; a["yaw"] = .95; a["pitch"] = .06; a["distance_km"] = 15000.0; }
         writeNative("astronomical", a, "semantic");
         model.nativeKind = "astronomical";
         model.nativeLabel = descend ? "Descending to Montréal" : "Earth · Moon";
@@ -968,12 +974,14 @@ struct Engine
         journeyPush(modelId == "bcc-iron" ? "Crystal structure" : "Microstructure");
         LL_INFOS("FinalverseShell") << "native scientific model=" << modelId << LL_ENDL;
     }
+    std::string genesisGraph;
     void goGraph()
     {
-        if (graphFile.empty()) { toast("No civilization graph configured"); return; }
-        writeNative("abstract", bj::object{ { "graph", graphFile } }, "semantic");
+        const bool fictional = model.genesis.active && !genesisGraph.empty();
+        if (graphFile.empty() && !fictional) { toast("No civilization graph configured"); return; }
+        writeNative("abstract", bj::object{ { "graph", fictional ? genesisGraph : graphFile } }, "semantic");
         model.nativeKind = "abstract";
-        model.nativeLabel = "Civilization relationships (demonstration)";
+        model.nativeLabel = fictional ? model.genesis.title + " · civilization (fictional)" : "Civilization relationships (demonstration)";
         journeyPush("Civilization graph");
     }
     void setStyle(const std::string& st)
@@ -1020,6 +1028,31 @@ struct Engine
         try { writeContext(model.ctx, currentManifest, "none", {}); } catch (const std::exception& e) { toast(e.what()); }
         LL_INFOS("FinalverseShell") << "genesis request id=" << genesisRequestId << " prompt=" << prompt << LL_ENDL;
     }
+    // Ω-XXI: the owner's approval of a Genesis draft, produced only by the confirmation dialog.
+    void genesisPublishApproved()
+    {
+        if (genesisWorld.empty() || model.genesis.phase != "complete") { toast("Only a completed Genesis draft can be published"); return; }
+        const std::string owner = ownerPrincipal();
+        if (owner.empty()) { toast("No owner identity is available for approval"); return; }
+        const std::string id = LLUUID::generateNewID().asString();
+        bj::object req{ { "schema", "finalverse.genesis-publication-request/1" }, { "request_id", id }, { "world", genesisWorld },
+                        { "approval", bj::object{ { "schema", "finalverse.owner-approval/1" }, { "decision", "approved" }, { "principal", owner }, { "world", genesisWorld },
+                                                  { "via", "FINALVERSE Viewer confirmation dialog" }, { "version", model.genesis.versions },
+                                                  { "statement", "Publish Genesis draft '" + model.genesis.title + "' (pavilion v" + std::to_string(model.genesis.versions) + ") to the live world" },
+                                                  { "approved_at", (int64_t)std::time(nullptr) } } } };
+        writePrivate(fs::path(genesisDir) / ("publish-" + id + ".json"), bj::serialize(req));
+        model.genesis.pubStage = "publishing";
+        model.genesis.pubMessage = "Publishing…";
+        LL_INFOS("FinalverseShell") << "genesis publication approved by owner=" << owner << " world=" << genesisWorld << " version=" << model.genesis.versions << LL_ENDL;
+    }
+    void genesisRollback(int version)
+    {
+        if (!privateDir(genesisDir)) return;
+        const std::string id = LLUUID::generateNewID().asString();
+        bj::object req{ { "schema", "finalverse.genesis-refine-request/1" }, { "request_id", id }, { "rollback_to", version }, { "world", genesisWorld } };
+        writePrivate(fs::path(genesisDir) / ("refine-" + id + ".json"), bj::serialize(req));
+        toast("Rolling back to pavilion v" + std::to_string(version));
+    }
     // Ω-XXI: a staged refinement job (Genesis -> Blender/Forge -> validation -> atomic swap).
     void genesisRefine(const std::string& prompt, const std::string& job)
     {
@@ -1029,7 +1062,7 @@ struct Engine
         bj::object req{ { "schema", "finalverse.genesis-refine-request/1" }, { "request_id", id }, { "prompt", prompt }, { "world", genesisWorld } };
         if (!job.empty()) req["job"] = job;
         writePrivate(fs::path(genesisDir) / ("refine-" + id + ".json"), bj::serialize(req));
-        toast("Refinement scheduled · the current asset stays until the validated version replaces it");
+        if (job.empty()) toast("Refinement scheduled · the current asset stays until the validated version replaces it");
         LL_INFOS("FinalverseShell") << "genesis refine id=" << id << " job=" << job << " prompt=" << prompt << LL_ENDL;
     }
     void pollGenesis()
@@ -1053,6 +1086,26 @@ struct Engine
                     if (auto* fsrc = j.if_contains("field_sources"); fsrc && fsrc->is_object()) for (auto& [k, x] : fsrc->as_object()) g.fieldSources[std::string(k)] = x.is_string() ? std::string(x.as_string()) : "";
                     if (auto* sm = j.if_contains("summary"); sm && sm->is_object()) g.summary = bj::serialize(*sm);
                     g.refined = str(j, "refined", g.refined);
+                    g.quality = str(j, "quality", g.quality);
+                    if (const std::string gp = str(j, "graph"); !gp.empty()) genesisGraph = gp;  // Ω-XXI fictional civilization graph
+                    if (auto* st = j.if_contains("stages"); st && st->is_array())
+                    {
+                        g.stages.clear();
+                        for (auto& x : st->as_array())
+                            if (x.is_object()) g.stages.push_back({ str(x.as_object(), "id"), str(x.as_object(), "label"), str(x.as_object(), "state"), x.as_object().contains("seconds") ? num(x.as_object().at("seconds")) : 0.0 });
+                    }
+                    if (auto* vs = j.if_contains("versions"); vs && vs->is_array() && !vs->as_array().empty())
+                    {
+                        g.versions = (int)vs->as_array().size();
+                        auto& last = vs->as_array().back().as_object();
+                        g.versionLabel = "Pavilion v" + std::to_string((int)num(last.at("version"))) + " · " + str(last, "source");
+                    }
+                    if (auto* pb = j.if_contains("publication"); pb && pb->is_object())
+                    {
+                        g.pubStage = str(pb->as_object(), "stage");
+                        g.pubMessage = str(pb->as_object(), "message");
+                        g.pubReceipt = str(pb->as_object(), "receipt");
+                    }
                     if (auto* an = j.if_contains("anchors"); an && an->is_object())
                         for (auto& [k, x] : an->as_object())
                             if (x.is_array() && x.as_array().size() == 5)
@@ -2074,6 +2127,7 @@ struct LLFloaterFinalverseShell::Impl
     std::vector<SavedView> savedViews;
     // Ω-XIX publication confirmation dialog (the owner's explicit approval).
     bool confirmPublish = false;
+    bool confirmGenesisPublish = false, genesisExpanded = false;
     // Ω-XIX progressive inspector: advanced sections the user opened.
     std::set<std::string> openSections;
     void openPalette() { paletteOpen = true; paletteQuery.clear(); paletteSel = 0; }
@@ -2238,6 +2292,12 @@ bool LLFloaterFinalverseShell::handleKeyHere(KEY key, MASK mask)
 {
     auto* ask = getChild<LLLineEditor>("ask");
     // Ω-XIX command palette: Ctrl/Cmd+K toggles; while open it owns the keyboard.
+    if (m->confirmGenesisPublish)
+    {
+        if (key == KEY_ESCAPE) { m->confirmGenesisPublish = false; return true; }
+        if (key == KEY_RETURN && m->engine && m->view && m->view->genesis.phase == "complete") { m->confirmGenesisPublish = false; m->engine->post([e = m->engine.get()] { e->genesisPublishApproved(); }); return true; }
+        return true;
+    }
     if (m->confirmPublish)
     {
         if (key == KEY_ESCAPE) { m->confirmPublish = false; return true; }
@@ -3362,7 +3422,40 @@ void LLFloaterFinalverseShell::draw()
     // Ω-XXI: a PreparePublication operation only opens the owner's approval dialog
     {
         static uint64_t seenPublish = 0;
-        if (v->publishRequests != seenPublish) { seenPublish = v->publishRequests; if (!v->creation.draftId.empty() && !v->creation.published) m->confirmPublish = true; }
+        if (v->publishRequests != seenPublish)
+        {
+            seenPublish = v->publishRequests;
+            if (!v->creation.draftId.empty() && !v->creation.published) m->confirmPublish = true;
+            else if (v->genesis.active && v->genesis.phase == "complete") m->confirmGenesisPublish = true;
+        }
+    }
+    if (m->confirmGenesisPublish && eng)
+    {
+        const auto& g = v->genesis;
+        gl_rect_2d(0, H, W, 0, alpha(T.bg, .55f), true);
+        const S32 w = 660, h = 350, l = (W - w) / 2, tt = (H + h) / 2;
+        panel(l, tt, l + w, tt - h, 18.f, true);
+        text("Publish this Genesis world?", l + 26, tt - 40, T.ink, 2, true);
+        S32 y = tt - 70;
+        const bool ok = g.phase == "complete";
+        y = wrapped("'" + g.title + "' — " + (g.versions ? "pavilion v" + std::to_string(g.versions) + " validated by the Core FWD validator and Forge. " : std::string()) + "Approving it will:", l + 26, y, w - 52, T.ink2, 0, 2);
+        static const char* what[] = { "Package the validated pavilion and the site plan immutably (digests + Forge receipt)",
+                                      "Publish a new SpatialDB catalog edition with the campus entity (reality: designed)",
+                                      "Create one MutSea world entity with your owner authority, pinned to that edition",
+                                      "Record the change in MutSea's hash-chained WorldLine (verified after restart)" };
+        for (auto* x : what) { text("•", l + 30, y, T.accent, 0, true); text(x, l + 46, y, T.ink2, 0); y -= 20; }
+        y -= 6;
+        y = wrapped("Designed content placed beside the Montréal dataset; not surveyed and not a real site. The AI generated it; only your approval publishes it.", l + 26, y, w - 52, T.ink3, 0, 2);
+        const S32 by = tt - h + 34;
+        LLRect cancel(l + w - 330, by + 14, l + w - 220, by - 14), okr(l + w - 210, by + 14, l + w - 26, by - 14);
+        roundRect(cancel.mLeft, cancel.mTop, cancel.mRight, cancel.mBottom, 13, T.surfaceHi);
+        text("Cancel", (cancel.mLeft + cancel.mRight) / 2, by - 5, T.ink, 0, true, LLFontGL::HCENTER);
+        roundRect(okr.mLeft, okr.mTop, okr.mRight, okr.mBottom, 13, ok ? T.accent : alpha(T.surfaceHi, .5f));
+        text("Approve & publish", (okr.mLeft + okr.mRight) / 2, by - 5, ok ? T.bg : T.ink3, 0, true, LLFontGL::HCENTER);
+        m->hits.clear();
+        m->hit(cancel, [this] { m->confirmGenesisPublish = false; }, "modal-cancel");
+        if (ok) m->hit(okr, [this, eng] { m->confirmGenesisPublish = false; eng->post([eng] { eng->genesisPublishApproved(); }); }, "modal-approve");
+        text("Enter approves · Esc cancels", l + 26, by - 5, T.ink3, 0);
     }
     if (m->confirmPublish && eng)
     {
@@ -3519,7 +3612,7 @@ void LLFloaterFinalverseShell::draw()
                 std::strftime(buf, sizeof buf, "%Y-%m-%d %H:%M UTC", std::gmtime(&tt));
                 rows = { { "Body", "Earth · Moon · Sun (direction)" }, { "Sim time", std::string(buf) + (v->simScale > 0 ? "  ×" + fmt(v->simScale, 0) : "") },
                          { "Frame", fr && !fr->frameId.empty() ? fr->frameId : "geocentric-equatorial-of-date" }, { "Units", "kilometre" },
-                         { "Ephemeris", "AA low-precision · checked vs JPL Horizons" }, { "Earth", "NASA Blue Marble (observed, ~20–40 km/px)" }, { "Moon", "orbit computed · surface illustrative" } };
+                         { "Ephemeris", "AA low-precision · checked vs JPL Horizons" }, { "Earth", "NASA Blue Marble (observed, ~20–40 km/px)" }, { "Clouds", "illustrative layer · not observed weather" }, { "Moon", "orbit computed · surface illustrative" } };
                 badge = "OBSERVED + COMPUTED";
             }
             else if (v->nativeKind == "scientific")
@@ -3537,9 +3630,12 @@ void LLFloaterFinalverseShell::draw()
             else
             {
                 kindLabel = "CIVILIZATION";
-                rows = { { "Nodes", "observed · fictional (demonstration) · designed" }, { "Edges", "factual · demonstration · designed · hypothetical" },
-                         { "Operator of the facility", "Port Robotics Cooperative (fictional)" }, { "Layout", "positions carry no meaning" } };
-                badge = "DEMONSTRATION";
+                const bool fictional = v->nativeLabel.find("(fictional)") != std::string::npos;
+                rows = fictional ? std::vector<std::pair<std::string, std::string>>{ { "Nodes", "all fictional · institutions, buildings, rules" }, { "Edges", "authored by the request or Genesis" },
+                                                                                     { "Emergent", "none yet · no simulation has run" }, { "Layout", "positions carry no meaning" } }
+                                 : std::vector<std::pair<std::string, std::string>>{ { "Nodes", "observed · fictional (demonstration) · designed" }, { "Edges", "factual · demonstration · designed · hypothetical" },
+                                                                                     { "Operator of the facility", "Port Robotics Cooperative (fictional)" }, { "Layout", "positions carry no meaning" } };
+                badge = fictional ? "FICTIONAL" : "DEMONSTRATION";
                 badgeCol = T.warn;
             }
             const S32 h = 92 + (S32)rows.size() * 22;
@@ -3571,37 +3667,90 @@ void LLFloaterFinalverseShell::draw()
                 bx += bw + 8;
             }
         }
-        // Genesis panel (top right)
+        // Genesis 2.0 panel (top right): quality levels G0..G4 as a live timeline, the asset
+        // version history and the next actions. Collapses to a chip once complete (click expands).
         if (v->genesis.active)
         {
             const auto& g = v->genesis;
-            const S32 gR = W - 24, gL = gR - (compact ? 320 : 380), gTop = H - 156, gH = 230;
-            panel(gL, gTop, gR, gTop - gH, 16.f, true);
-            text("GENESIS", gL + 18, gTop - 24, T.accent, 0, true);
-            chip(g.reality.empty() ? "DESIGNED" : (g.reality == "hybrid" ? "HYBRID · DESIGNED" : "DESIGNED"), gR - 150, gTop - 10, T.warn);
-            text(clip(g.title.empty() ? "Understanding your request…" : g.title, gR - gL - 36, 2, true), gL + 18, gTop - 52, T.ink, 2, true);
-            static const char* phases[] = { "understanding", "landform", "layout", "streets", "architecture", "landscape", "life", "complete" };
-            S32 px = gL + 18;
-            const S32 pw = (gR - gL - 36) / 8;
-            int cur = 0;
-            for (int i = 0; i < 8; ++i) if (g.phase == phases[i]) cur = i;
-            for (int i = 0; i < 8; ++i)
+            static double completeAt = -1;
+            if (g.phase == "complete" && completeAt < 0) completeAt = t;
+            if (g.phase != "complete") completeAt = -1;
+            const bool collapsed = !m->genesisExpanded && m->mode != Mode::Create && ((completeAt >= 0 && t - completeAt > 10) || !v->nativeKind.empty() || (!v->ai.stage.empty() && v->ai.stage != "cancelled"));
+            const S32 gR = W - 24;
+            if (collapsed)
             {
-                const LLColor4 col = i < cur ? T.accent : i == cur ? T.live : alpha(T.ink3, .35f);
-                roundRect(px + i * pw, gTop - 70, px + (i + 1) * pw - 4, gTop - 76, 3, col);
+                const std::string label = "GENESIS  ·  " + clip(g.title, 260, 0) + "  ·  " + (g.quality.empty() ? g.phase : g.quality + (g.phase == "complete" ? " ✓" : "")) +
+                                          (g.versions ? "  ·  v" + std::to_string(g.versions) : "") + (g.pubStage == "published" ? "  ·  PUBLISHED" : "");
+                const S32 cw = width(label, 0, true) + 32, cTop = H - 156;
+                LLRect rc(gR - cw, cTop, gR, cTop - 30);
+                roundRect(rc.mLeft, rc.mTop, rc.mRight, rc.mBottom, 15, alpha(T.surface, .92f));
+                text(label, gR - cw + 16, cTop - 20, g.pubStage == "published" ? T.live : T.accent, 0, true);
+                m->hit(rc, [this] { m->genesisExpanded = true; }, "genesis-chip");
             }
-            text(g.phase.empty() ? "starting" : g.phase, gL + 18, gTop - 96, T.ink, 0, true);
-            text(fmt(g.progress * 100, 0) + " %  ·  " + fmt(g.elapsed, 0) + " s", gR - 18, gTop - 96, T.ink3, 0, false, LLFontGL::RIGHT);
-            auto res = [&](const char* k) { auto it = g.resident.find(k); return it == g.resident.end() ? 0 : it->second; };
-            S32 y = gTop - 122;
-            const std::string l1 = std::to_string(res("building") + res("asset")) + " buildings · " + std::to_string(res("grove")) + " groves · " + std::to_string(res("road")) + " roads";
-            const std::string l2 = std::to_string(res("vehicle")) + " pods · " + std::to_string(res("robot")) + " robots · " + fmt(g.triangles / 1000.0, 0) + "k triangles";
-            text(l1, gL + 18, y, T.ink, 0); y -= 20;
-            text(l2, gL + 18, y, T.ink2, 0); y -= 20;
-            text("frame p50 " + fmt(g.frameP50, 1) + " ms · p95 " + fmt(g.frameP95, 1) + " ms · " + std::to_string(g.refused) + " refused", gL + 18, y, T.ink3, 0); y -= 20;
-            if (!g.model.empty()) { text(clip("spec by " + g.model + " in " + fmt(g.modelSeconds, 1) + " s · style " + (g.style.empty() ? "default" : g.style), gR - gL - 36, 0), gL + 18, y, T.ink3, 0); y -= 20; }
-            if (!g.refined.empty()) { text(clip(g.refined, gR - gL - 36, 0), gL + 18, y, T.live, 0); y -= 20; }
-            if (!g.error.empty()) text(clip(g.error, gR - gL - 36, 0), gL + 18, y, T.bad, 0);
+            else
+            {
+                const S32 gL = gR - (compact ? 330 : 400), gTop = H - 156;
+                const S32 gH = 132 + 22 * 5 + 22 * 3 + 40;
+                panel(gL, gTop, gR, gTop - gH, 16.f, true);
+                text("GENESIS 2.0", gL + 18, gTop - 24, T.accent, 0, true);
+                chip(g.reality == "hybrid" ? "HYBRID · DESIGNED" : g.reality == "fictional" ? "FICTIONAL" : "DESIGNED", gR - 150, gTop - 10, T.warn);
+                text(clip(g.title.empty() ? "Understanding your request…" : g.title, gR - gL - 36, 2, true), gL + 18, gTop - 52, T.ink, 2, true);
+                text(fmt(g.progress * 100, 0) + " %  ·  " + fmt(g.elapsed, 0) + " s", gR - 18, gTop - 78, T.ink3, 0, false, LLFontGL::RIGHT);
+                text(g.phase.empty() ? "starting" : g.phase, gL + 18, gTop - 78, T.ink2, 0, true);
+                S32 y = gTop - 106;
+                static const char* ids[] = { "G0", "G1", "G2", "G3", "G4" };
+                static const char* labels[] = { "Intent preview", "Structural world", "Functional world", "Artistic refinement", "High-quality refinement" };
+                for (int i = 0; i < 5; ++i)
+                {
+                    std::string state = g.phase == "complete" ? "n/a" : "pending";
+                    double secs = 0;
+                    for (auto& st : g.stages) if (st.id == ids[i]) { state = st.state; secs = st.seconds; }
+                    const LLColor4 col = state == "done" ? T.live : state == "running" ? T.accent : state == "failed" ? T.bad : state == "skipped" ? T.warn : T.ink3;
+                    if (state == "running" && !eng->reducedMotion)
+                    {
+                        gGL.pushMatrix(); gGL.translatef((F32)gL + 24, (F32)y + 5, 0);
+                        gl_washer_segment_2d(6, 4.f, (F32)(t * 5), (F32)(t * 5 + 4.4), 14, col, alpha(col, 0));
+                        gGL.popMatrix();
+                    }
+                    else text(state == "done" ? "✓" : state == "failed" ? "✕" : state == "n/a" ? "–" : "○", gL + 19, y, col, 0, true);
+                    text(std::string(ids[i]) + "  " + labels[i] + (state == "n/a" ? "  · not applicable" : ""), gL + 38, y, state == "pending" || state == "n/a" ? T.ink3 : T.ink, 0, state == "running");
+                    if (state == "done" || state == "running") text(fmt(secs, 1) + " s", gR - 18, y, T.ink3, 0, false, LLFontGL::RIGHT);
+                    y -= 22;
+                }
+                y -= 4;
+                std::string l1;
+                try
+                {
+                    auto sm = bj::parse(g.summary).as_object();
+                    auto n = [&](const char* k) { return sm.contains(k) ? std::to_string((int)num(sm.at(k))) : std::string("0"); };
+                    l1 = n("buildings") + " buildings · " + n("zones") + " zones · " + n("gardens") + " gardens · " + n("trees") + " trees";
+                }
+                catch (...) {}
+                text(clip(l1, gR - gL - 36, 0), gL + 18, y, T.ink2, 0); y -= 20;
+                text("frame p50 " + fmt(g.frameP50, 1) + " ms · p95 " + fmt(g.frameP95, 1) + " ms · " + fmt(g.triangles / 1000.0, 0) + "k tris · " + std::to_string(g.refused) + " refused", gL + 18, y, T.ink3, 0); y -= 20;
+                const std::string vline = !g.pubMessage.empty() ? g.pubMessage : !g.refined.empty() ? g.refined : g.versionLabel;
+                if (!vline.empty()) { text(clip(vline, gR - gL - 36, 0), gL + 18, y, g.pubStage == "refused" ? T.bad : T.live, 0); }
+                // actions
+                std::vector<std::pair<std::string, std::function<void()>>> acts;
+                if (g.phase == "complete")
+                {
+                    if (g.reality != "fictional") acts.push_back({ "Refine pavilion", [eng] { eng->post([eng] { eng->ask("Make this pavilion more elegant, with curved glass walls, a timber roof structure, warm interior lighting, and a landscaped entrance."); }); } });
+                    if (g.versions >= 2) acts.push_back({ "Roll back", [eng, n = g.versions - 1] { eng->post([eng, n] { eng->genesisRollback(n); }); } });
+                    if (g.pubStage != "published" && g.pubStage != "publishing") acts.push_back({ "Publish…", [this] { m->confirmGenesisPublish = true; } });
+                }
+                acts.push_back({ "Hide", [this] { m->genesisExpanded = false; } });
+                S32 bx = gL + 18;
+                for (auto& a2 : acts)
+                {
+                    const S32 bw = width(a2.first, 0, true) + 22;
+                    const std::string id = "genesis-" + a2.first;
+                    roundRect(bx, gTop - gH + 34, bx + bw, gTop - gH + 10, 12, a2.first == "Publish…" ? alpha(T.accent, .9f) : T.accentSoft);
+                    if (m->focused(id)) focusRing(LLRect(bx, gTop - gH + 34, bx + bw, gTop - gH + 10), 12);
+                    text(a2.first, bx + bw / 2, gTop - gH + 17, a2.first == "Publish…" ? T.bg : T.ink, 0, true, LLFontGL::HCENTER);
+                    m->hit(LLRect(bx, gTop - gH + 34, bx + bw, gTop - gH + 10), a2.second, id);
+                    bx += bw + 8;
+                }
+            }
         }
         // Journey line (bottom left, above the ask bar)
         if (!v->journey.empty())
@@ -3663,6 +3812,10 @@ void LLFloaterFinalverseShell::draw()
         else if (cmd == "undo") eng->post([eng] { eng->creationHistory(false); });
         else if (cmd == "redo") eng->post([eng] { eng->creationHistory(true); });
         else if (cmd == "publishdialog") m->confirmPublish = true;
+        else if (cmd == "genesispublishdialog") m->confirmGenesisPublish = true;
+        else if (cmd == "genesisapprove") { if (m->confirmGenesisPublish) { m->confirmGenesisPublish = false; eng->post([eng] { eng->genesisPublishApproved(); }); } }
+        else if (cmd == "genesisexpand") m->genesisExpanded = arg != "off";
+        else if (cmd == "rollback") eng->post([eng, n = std::atoi(arg.c_str())] { eng->genesisRollback(n); });
         else if (cmd == "approve") { if (m->confirmPublish) { m->confirmPublish = false; eng->post([eng] { eng->publishApproved(); }); } }
         else if (cmd == "window")
         {

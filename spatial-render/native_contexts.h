@@ -30,6 +30,7 @@ struct AstroParams {
   double distance_km = 26000;  // camera distance from the focus
   double yaw = .35, pitch = -.18;
   bool descend = false;
+  bool sun_relative = false;   // Ω-XXI: yaw measured from the sun's azimuth (terminator framing)
   double lat = 45.5017, lon = -73.5673;  // descent target (Montréal)
 };
 
@@ -66,6 +67,9 @@ class NativeScene {
     Request earth;
     earth.node.id = "earth"; earth.node.kind = "planet"; earth.priority = 0; earth.reveal_seconds = 0;
     earth.node.num = {{"radius", finalverse::astro::kEarthMeanRadiusKm}, {"segments", 256}, {"roughness", .78}};
+    // Ω-XXI: ocean glint (water classified from the observed map) and an ILLUSTRATIVE cloud
+    // layer (procedural, not observed weather; the context card says so)
+    if (!earth_texture.empty() && !std::getenv("FINALVERSE_ASTRO_PLAIN")) { earth.node.num["ocean_roughness"] = .28; earth.node.num["clouds"] = .62; }
     if (!earth_texture.empty()) earth.node.text["texture_file"] = earth_texture;
     else earth.node.num.insert({{"r", .2}, {"g", .35}, {"b", .6}});
     earth.at.on_ground = false;
@@ -233,7 +237,8 @@ class NativeScene {
       } else {
         focus = {0, 0, 0};
         dist = astro.distance_km;
-        yaw = astro.yaw;
+        // Ω-XXI: sun-relative framing keeps the terminator in view (day side, limb, night side)
+        yaw = astro.sun_relative ? std::atan2(s[0], s[2]) + astro.yaw : astro.yaw;
         pitch = astro.pitch;
       }
     } else if (kind == Kind::Scientific || kind == Kind::Abstract) {

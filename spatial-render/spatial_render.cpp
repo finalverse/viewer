@@ -122,13 +122,14 @@ Control control(const std::string &raw) {
     if (c.kind == "astronomical") {
       require(d.HasMember("astronomical"), "astronomical parameters");
       const auto &a = d["astronomical"];
-      keys(a, {"time_unix"}, {"time_scale", "distance_km", "yaw", "pitch", "descend", "lat", "lon"});
+      keys(a, {"time_unix"}, {"time_scale", "distance_km", "yaw", "pitch", "descend", "lat", "lon", "sun_relative"});
       c.astro.unix0 = number(a["time_unix"], 0, 1e11);
       if (a.HasMember("time_scale")) c.astro.scale = number(a["time_scale"], 0, 1e7);
       if (a.HasMember("distance_km")) c.astro.distance_km = number(a["distance_km"], 7000, 2e6);
       if (a.HasMember("yaw")) c.astro.yaw = number(a["yaw"], -100, 100);
       if (a.HasMember("pitch")) c.astro.pitch = number(a["pitch"], -1.5, 1.5);
       if (a.HasMember("descend")) { require(a["descend"].IsBool(), "descend boolean"); c.astro.descend = a["descend"].GetBool(); }
+      if (a.HasMember("sun_relative")) { require(a["sun_relative"].IsBool(), "sun_relative boolean"); c.astro.sun_relative = a["sun_relative"].GetBool(); }
       if (a.HasMember("lat")) c.astro.lat = number(a["lat"], -90, 90);
       if (a.HasMember("lon")) c.astro.lon = number(a["lon"], -180, 180);
       c.nativeKey = "astro|" + std::to_string(c.astro.unix0) + "|" + std::to_string(c.astro.scale) + "|" + (c.astro.descend ? "d" : "o");
@@ -657,7 +658,7 @@ int main(int argc, char **argv) {
               }
               need(renderer.set_presentation(st.look), renderer.error());
               if (astro) {
-                const float white[] = {1.f, .98f, .95f}, space[] = {.004f, .005f, .007f};
+                const float white[] = {1.f, .98f, .95f}, space[] = {.011f, .013f, .019f};  // Ω-XXI: night side faintly lifted for legibility (presentation)
                 renderer.set_sun_colour(white);
                 renderer.set_sun_intensity(float(st.look.sun_radiance / M_PI));
                 renderer.set_ambient(space);
