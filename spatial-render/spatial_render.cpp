@@ -122,13 +122,14 @@ Control control(const std::string &raw) {
     if (c.kind == "astronomical") {
       require(d.HasMember("astronomical"), "astronomical parameters");
       const auto &a = d["astronomical"];
-      keys(a, {"time_unix"}, {"time_scale", "distance_km", "yaw", "pitch", "descend", "lat", "lon"});
+      keys(a, {"time_unix"}, {"time_scale", "distance_km", "yaw", "pitch", "descend", "lat", "lon", "sun_relative"});
       c.astro.unix0 = number(a["time_unix"], 0, 1e11);
       if (a.HasMember("time_scale")) c.astro.scale = number(a["time_scale"], 0, 1e7);
       if (a.HasMember("distance_km")) c.astro.distance_km = number(a["distance_km"], 7000, 2e6);
       if (a.HasMember("yaw")) c.astro.yaw = number(a["yaw"], -100, 100);
       if (a.HasMember("pitch")) c.astro.pitch = number(a["pitch"], -1.5, 1.5);
       if (a.HasMember("descend")) { require(a["descend"].IsBool(), "descend boolean"); c.astro.descend = a["descend"].GetBool(); }
+      if (a.HasMember("sun_relative")) { require(a["sun_relative"].IsBool(), "sun_relative boolean"); c.astro.sun_relative = a["sun_relative"].GetBool(); }
       if (a.HasMember("lat")) c.astro.lat = number(a["lat"], -90, 90);
       if (a.HasMember("lon")) c.astro.lon = number(a["lon"], -180, 180);
       c.nativeKey = "astro|" + std::to_string(c.astro.unix0) + "|" + std::to_string(c.astro.scale) + "|" + (c.astro.descend ? "d" : "o");
@@ -655,9 +656,10 @@ int main(int argc, char **argv) {
                 st.look.bloom_strength = .1f;
                 st.look.vignette = .32f;
               }
+              if (const char *ao = std::getenv("FINALVERSE_STORM_SSAO")) st.look.ambient_occlusion = float(std::clamp(std::atof(ao), 0.0, 1.0));
               need(renderer.set_presentation(st.look), renderer.error());
               if (astro) {
-                const float white[] = {1.f, .98f, .95f}, space[] = {.004f, .005f, .007f};
+                const float white[] = {1.f, .98f, .95f}, space[] = {.011f, .013f, .019f};  // Ω-XXI: night side faintly lifted for legibility (presentation)
                 renderer.set_sun_colour(white);
                 renderer.set_sun_intensity(float(st.look.sun_radiance / M_PI));
                 renderer.set_ambient(space);
@@ -798,6 +800,7 @@ int main(int argc, char **argv) {
               // eye adaptation for low sun: twilight scenes are shown about 1.4 EV brighter
               // (a fixed curve on the sun elevation, documented; not a metered auto-exposure)
               if (!eng) st.look.exposure_ev += float(std::clamp((12.0 - st.sun_elevation_deg) / 16.0, 0.0, 1.0) * 1.4);
+              if (const char *ao = std::getenv("FINALVERSE_STORM_SSAO")) st.look.ambient_occlusion = float(std::clamp(std::atof(ao), 0.0, 1.0));
               need(renderer.set_presentation(st.look), renderer.error());
               const std::string key = styleName + "|" + std::to_string(st.sun_elevation_deg) + "|" + std::to_string(st.sun_azimuth_deg) + "|" + c.context;
               if (eng) {
