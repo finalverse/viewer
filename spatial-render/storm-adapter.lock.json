@@ -3,7 +3,7 @@
   "repository": "https://github.com/finalverse/storm.git",
   "accepted_main": "d611f7fbf95262dad88140460745e9faf1560e85",
   "api": "Storm scene contexts, native transport readback, smooth shading, cinematic HDR presentation, Genesis procedural runtime (\u03a9-XXI local candidate)",
-  "frozen_source_commit": "08f3b731703d4c30912693602cec02c51543603a",
+  "frozen_source_commit": "52dcb745ea652f2a691b3698f1c6a4df2a68f5db",
   "source_status": "local \u03a9-XXI candidate on feat/omega-xxi-storm-20261126; not an accepted Storm release",
   "files": [
     {
